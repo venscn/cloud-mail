@@ -1,4 +1,4 @@
-import { WorkerMailer } from 'worker-mailer';
+import { WorkerMailer, encodeHeader } from 'worker-mailer';
 import kvConst from '../const/kv-const';
 import fileUtils from '../utils/file-utils';
 
@@ -79,24 +79,73 @@ const smtpSendService = {
 			secure: defaults.secure,
 			startTls: defaults.startTls,
 			credentials: { username: user, password: pass },
+			envelopeFrom: this.normalizeEnvelopeFrom(settingConf.envelopeFrom ?? c.env[`${channel}_smtp_envelope_from`]),
 			authType: ['plain', 'login']
 		};
 	},
 
-	// SMTP 发送：fromEmail 为 MAIL FROM 地址（QQ 必须传 QQ 账号本身，其余渠道传发件账号地址）
-	// worker-mailer 的 send 不返回 messageId，providerId 统一存 null
-	async sendBySmtp(config, params, fromEmail) {
+	normalizeEnvelopeFrom(value) {
+		if (value === undefined || value === null || value === '') return '';
+		if (typeof value !== 'string' || /[\r\n]/.test(value)) {
+			throw new Error('Invalid SMTP envelope sender address');
+		}
+		const address = value.trim();
+		if (address && !/^[^\s<>@,;"\\]+@[^\s<>@,;"\\]+$/.test(address)) {
+			throw new Error('Invalid SMTP envelope sender address');
+		}
+		return address;
+	},
+
+	async sendBySendPulse(config, params) {
+		const visibleFrom = this.normalizeEnvelopeFrom(params.accountEmail);
+		const envelopeFrom = this.normalizeEnvelopeFrom(config.envelopeFrom) || visibleFrom;
+		if (!visibleFrom || envelopeFrom.split('@')[1].toLowerCase() !== visibleFrom.split('@')[1].toLowerCase()) {
+			throw new Error('SendPulse envelope sender and visible From must use the same domain');
+		}
+		return this.sendBySmtp(config, params, envelopeFrom, visibleFrom);
+	},
+
+	async sendByQq(config, params) {
+		const fromEmail = config.credentials.username;
+		const actualEmail = this.normalizeEnvelopeFrom(params.accountEmail);
+		if (!actualEmail) throw new Error('Missing sender account address');
+		if (fromEmail.toLowerCase() === actualEmail.toLowerCase()) {
+			return this.sendBySmtp(config, params, fromEmail);
+		}
+		const notice = `实际发件邮箱：${actualEmail}（此邮件经 QQ 邮箱代发，直接回复即可联系发件人。）`;
+		const safeEmail = actualEmail.replace(/[&<>"']/g, char => ({
+			'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+		}[char]));
+		const htmlNotice = `<p style="margin-bottom:24px;padding-bottom:12px;border-bottom:1px solid #ddd;color:#666;font-size:12px">实际发件邮箱：${safeEmail}（此邮件经 QQ 邮箱代发，直接回复即可联系发件人。）</p>`;
+		const outgoing = { ...params };
+		if (params.text || !params.html) outgoing.text = `${notice}\n\n${params.text || ''}`;
+		if (params.html) {
+			outgoing.html = /<body\b[^>]*>/i.test(params.html)
+				? params.html.replace(/<body\b[^>]*>/i, match => match + htmlNotice)
+				: htmlNotice + params.html;
+		}
+		return this.sendBySmtp(config, outgoing, fromEmail);
+	},
+
+	// worker-mailer 用 from.email 生成 MAIL FROM，headers.From 则覆盖可见发件人。
+	// 不改显示名称大小写；回复邮件合并 headers，不能丢失显式 From。
+	// send 不返回 messageId，providerId 统一存 null。
+	async sendBySmtp(config, params, fromEmail, visibleFromEmail = fromEmail) {
+		const name = String(params.name || '').replace(/[\r\n]/g, ' ');
 		const sendForm = {
-			from: { email: fromEmail, name: params.name },
+			from: { email: fromEmail, name },
 			to: [...params.receiveEmail],
-			subject: params.subject
+			subject: params.subject,
+			headers: {}
 		};
 
-		// QQ 等渠道 From 必须是渠道账号本身，用 Reply-To 指回真实发件人，收件人回复会回到其 @域名 地址
-		if (fromEmail !== params.accountEmail) {
-			sendForm.reply = { email: params.accountEmail, name: params.name };
+		if (visibleFromEmail !== fromEmail) {
+			const displayName = encodeHeader(name).replace(/["\\]/g, '\\$&');
+			sendForm.headers.From = name ? `"${displayName}" <${visibleFromEmail}>` : visibleFromEmail;
 		}
-
+		if (fromEmail !== params.accountEmail) {
+			sendForm.reply = { email: params.accountEmail, name };
+		}
 
 
 		if (params.ccEmail.length > 0) {
@@ -122,6 +171,7 @@ const smtpSendService = {
 
 		if (params.sendType === 'reply' && params.messageId) {
 			sendForm.headers = {
+				...sendForm.headers,
 				'in-reply-to': params.messageId,
 				'references': params.messageId
 			};

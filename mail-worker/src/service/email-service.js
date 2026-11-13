@@ -632,8 +632,8 @@ const emailService = {
 				return sendpulseConfig ? {
 					name: 'sendpulse',
 					limit: smtpSendService.getDailyLimit(c, 'sendpulse', smtpChannels),
-					// SendPulse 的 From 用发件账号地址（发件域名已在 SendPulse 验证）
-					send: params => smtpSendService.sendBySmtp(sendpulseConfig, params, params.accountEmail)
+					// 已授权地址用于 SMTP 信封；可见 From 始终使用当前发件账号。
+					send: params => smtpSendService.sendBySendPulse(sendpulseConfig, params)
 				} : null;
 			},
 
@@ -656,7 +656,7 @@ const emailService = {
 					name: 'qq',
 					limit: smtpSendService.getDailyLimit(c, 'qq', smtpChannels),
 					// QQ SMTP 的 From 必须是 QQ 账号本身的地址，不能伪装发件域名，sender name 保留
-					send: params => smtpSendService.sendBySmtp(qqConfig, params, qqConfig.credentials.username)
+					send: params => smtpSendService.sendByQq(qqConfig, params)
 				} : null;
 			}
 		};
@@ -797,7 +797,7 @@ const emailService = {
 
 	async sendByCloudflareEmail(c, params) {
 		const sendForm = {
-			from: { email: "admin@example.com", name: params.name },
+			from: { email: params.accountEmail, name: params.name },
 			to: [...params.receiveEmail],
 			subject: params.subject,
 			replyTo: params.accountEmail
@@ -845,7 +845,7 @@ const emailService = {
 		const resend = new Resend(resendToken);
 
 		const sendForm = {
-			from: `${params.name} <admin@example.com>`,
+			from: `${params.name} <${params.accountEmail}>`,
 			reply_to: params.accountEmail,
 			to: [...params.receiveEmail],
 			subject: params.subject,

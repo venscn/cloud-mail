@@ -10,6 +10,7 @@ import {t} from '../i18n/i18n'
 import verifyRecordService from './verify-record-service';
 import userContext from '../security/user-context';
 import domainUtils from '../utils/domain-uitls';
+import smtpSendService from './smtp-send-service';
 
 const settingService = {
 
@@ -141,6 +142,13 @@ const settingService = {
 				const merged = { ...prev, ...value };
 				if (typeof value.pass === 'string' && value.pass.endsWith('******')) {
 					merged.pass = prev.pass || '';
+				}
+				if (channel === 'sendpulse') {
+					try {
+						merged.envelopeFrom = smtpSendService.normalizeEnvelopeFrom(merged.envelopeFrom);
+					} catch (error) {
+						throw new BizError(error.message);
+					}
 				}
 				merged.port = Number(merged.port) || 0;
 				merged.dailyLimit = Number(merged.dailyLimit) || 0;

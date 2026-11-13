@@ -757,6 +757,11 @@ Authorization: &lt;secret&gt;</pre>
           <el-input type="text" :placeholder="$t('smtpUser')" v-model="smtpChannelForm.user"/>
           <el-input type="text" style="margin-top: 15px" :placeholder="$t('smtpPass')" v-model="smtpChannelForm.pass"/>
           <div class="smtp-pass-tip">{{ $t('smtpPassKeep') }}</div>
+          <template v-if="smtpChannelForm.key === 'sendpulse'">
+            <el-input type="text" style="margin-top: 15px" :placeholder="$t('smtpEnvelopeFrom')" :aria-label="$t('smtpEnvelopeFrom')" v-model="smtpChannelForm.envelopeFrom"/>
+            <div class="smtp-pass-tip">{{ $t('smtpEnvelopeFromTip') }}</div>
+          </template>
+          <div v-else class="smtp-pass-tip">{{ $t('smtpQqIdentityTip') }}</div>
           <el-input type="text" style="margin-top: 15px" :placeholder="smtpChannelForm.defaultHost" v-model="smtpChannelForm.host"/>
           <div style="margin-top: 15px; display: flex; gap: 15px">
             <el-input-number v-model="smtpChannelForm.port" :min="1" :max="65535" :placeholder="$t('smtpPort')" style="flex: 1"/>
@@ -1061,7 +1066,8 @@ const smtpChannelForm = reactive({
   host: '',
   port: 0,
   dailyLimit: 0,
-  defaultHost: ''
+  defaultHost: '',
+  envelopeFrom: ''
 })
 const sendChainList = ref([])
 const defaultSendChain = ['sendpulse', 'resend', 'qq', 'cf']
@@ -1729,6 +1735,7 @@ function openSmtpChannel(channel) {
   smtpChannelForm.label = channel === 'sendpulse' ? 'SendPulse' : 'QQ'
   smtpChannelForm.user = conf.user || ''
   smtpChannelForm.pass = conf.pass || ''
+  smtpChannelForm.envelopeFrom = conf.envelopeFrom || ''
   smtpChannelForm.host = conf.host || ''
   smtpChannelForm.port = conf.port || 465
   smtpChannelForm.dailyLimit = conf.dailyLimit || (channel === 'sendpulse' ? 400 : 100)
@@ -1744,7 +1751,8 @@ function saveSmtpChannel() {
         pass: smtpChannelForm.pass,
         host: smtpChannelForm.host,
         port: smtpChannelForm.port,
-        dailyLimit: smtpChannelForm.dailyLimit
+        dailyLimit: smtpChannelForm.dailyLimit,
+        ...(smtpChannelForm.key === 'sendpulse' ? { envelopeFrom: smtpChannelForm.envelopeFrom.trim() } : {})
       }
     }
   })
