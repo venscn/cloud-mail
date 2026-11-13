@@ -35,15 +35,24 @@ const dbInit = {
 		await this.v3_4DB(c);
 		await this.v3_5DB(c);
 		await this.v3_6DB(c);
+		await this.v3_7DB(c);
 		await settingService.refresh(c);
 		return c.text('success');
+	},
+
+	async v3_7DB(c) {
+		try {
+			await c.env.db.prepare(`ALTER TABLE setting ADD COLUMN cf_email_enabled INTEGER NOT NULL DEFAULT 1;`).run();
+		} catch (e) {
+			console.warn(`跳过字段：${e.message}`);
+		}
 	},
 
 	async v3_6DB(c) {
 		try {
 			await c.env.db.batch([
 				c.env.db.prepare(`ALTER TABLE setting ADD COLUMN smtp_channels TEXT NOT NULL DEFAULT '{}';`),
-				c.env.db.prepare(`ALTER TABLE setting ADD COLUMN send_chain TEXT NOT NULL DEFAULT '["cf","sendpulse","resend","qq"]';`)
+				c.env.db.prepare(`ALTER TABLE setting ADD COLUMN send_chain TEXT NOT NULL DEFAULT '["sendpulse","resend","qq","cf"]';`)
 			]);
 		} catch (e) {
 			console.warn(`跳过字段：${e.message}`);

@@ -17,7 +17,7 @@ const settingService = {
 		const settingRow = await orm(c).select().from(setting).get();
 		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
 		settingRow.smtpChannels = JSON.parse(settingRow.smtpChannels || '{}');
-		settingRow.sendChain = JSON.parse(settingRow.sendChain || '["cf","sendpulse","resend","qq"]');
+		settingRow.sendChain = JSON.parse(settingRow.sendChain || '["sendpulse","resend","qq","cf"]');
 		settingRow.r2Domain = '';
 		c.set('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
@@ -147,6 +147,16 @@ const settingService = {
 				smtpChannels[channel] = merged;
 			});
 			params.smtpChannels = JSON.stringify(smtpChannels);
+		}
+
+		// CF 绑定发信渠道开关，只接受 0/1，其他值忽略
+		if (params.cfEmailEnabled !== undefined) {
+			const cfEnabled = Number(params.cfEmailEnabled);
+			if (cfEnabled === 0 || cfEnabled === 1) {
+				params.cfEmailEnabled = cfEnabled;
+			} else {
+				delete params.cfEmailEnabled;
+			}
 		}
 
 		// 降级链顺序只接受合法渠道标识组成的非空数组，非法则忽略

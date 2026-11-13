@@ -418,7 +418,7 @@ const emailService = {
 		ccEmail.forEach(address => takenAddress.add(address.toLowerCase()));
 		bccEmail = bccEmail.filter(address => !takenAddress.has(address.toLowerCase()));
 
-		const { resendTokens, r2Domain, send, domainList, smtpChannels, sendChain } = await settingService.query(c);
+		const { resendTokens, r2Domain, send, domainList, smtpChannels, sendChain, cfEmailEnabled } = await settingService.query(c);
 
 		let { imageDataList, html } = await attService.toImageUrlHtml(c, content);
 
@@ -494,7 +494,7 @@ const emailService = {
 
 		const domain = emailUtils.getDomain(accountRow.email);
 		const resendToken = resendTokens[domain];
-		const useCloudflareEmail = !!c.env.email;
+		const useCloudflareEmail = !!c.env.email && cfEmailEnabled !== 0;
 		const useSendPulseSmtp = !!smtpSendService.getSmtpConfig(c, 'sendpulse', smtpChannels);
 		const useQqSmtp = !!smtpSendService.getSmtpConfig(c, 'qq', smtpChannels);
 
@@ -553,7 +553,7 @@ const emailService = {
 
 		// sendParams 用于渠道请求，saveParams 保留保存记录所需的账号、权限和附件数据。
 		const context = {
-			separate, allInternal, useCloudflareEmail, resendToken, smtpChannels, sendChain, sendParams,
+			separate, allInternal, useCloudflareEmail, resendToken, smtpChannels, sendChain, cfEmailEnabled, sendParams,
 			saveParams: {
 				accountId, userId, name, subject, text, html,
 				sendEmail: accountRow.email,
@@ -565,7 +565,7 @@ const emailService = {
 		};
 
 		// 全部站内收件人走本地投递；存在站外收件人时按系统设置 sendChain 的
-		// 渠道顺序（默认 CF 绑定 -> SendPulse SMTP -> Resend -> QQ SMTP）降级发送
+		// 渠道顺序（默认 SendPulse SMTP -> Resend -> QQ SMTP -> CF 绑定）降级发送
 		let deliveries;
 		if (allInternal) {
 			deliveries = this.sendInternal(c, context);
@@ -616,11 +616,12 @@ const emailService = {
 		}
 	},
 
-	// 构建外发渠道降级链：顺序由系统设置 sendChain 决定（默认 cf -> sendpulse -> resend -> qq），
+	// 构建外发渠道降级链：顺序由系统设置 sendChain 决定（默认 sendpulse -> resend -> qq -> cf），
 	// 只保留当前可用的渠道；CF 绑定不计配额，其余渠道按每日配额降级。
-	buildChannelChain(c, { resendToken, smtpChannels, sendChain }) {
+	// CF 绑定渠道还需系统设置 cfEmailEnabled 开启才可用。
+	buildChannelChain(c, { resendToken, smtpChannels, sendChain, cfEmailEnabled }) {
 		const builders = {
-			cf: () => c.env.email ? {
+			cf: () => (c.env.email && cfEmailEnabled !== 0) ? {
 				name: 'cf',
 				limit: null,
 				send: params => this.sendByCloudflareEmail(c, params)
@@ -662,7 +663,7 @@ const emailService = {
 
 		const order = Array.isArray(sendChain) && sendChain.length > 0
 			? sendChain
-			: ['cf', 'sendpulse', 'resend', 'qq'];
+			: ['sendpulse', 'resend', 'qq', 'cf'];
 
 		const channels = [];
 		for (const name of order) {
@@ -677,8 +678,8 @@ const emailService = {
 	// 外发降级链：普通发送一次提交所有收件人，分开发送逐人发送。
 	// 每个渠道发送前检查当日配额余量，不足则跳过；配额/频率限制类错误会把该渠道
 	// 当日计数设为上限并降级到下一渠道，分开发送配额中途用完时剩余收件人自动切渠道继续。
-	async *sendExternal(c, { separate, resendToken, smtpChannels, sendChain, sendParams, saveParams }) {
-		const channels = this.buildChannelChain(c, { resendToken, smtpChannels, sendChain });
+	async *sendExternal(c, { separate, resendToken, smtpChannels, sendChain, cfEmailEnabled, sendParams, saveParams }) {
+		const channels = this.buildChannelChain(c, { resendToken, smtpChannels, sendChain, cfEmailEnabled });
 		const copyCount = sendParams.ccEmail.length + sendParams.bccEmail.length;
 		const pendingGroups = separate
 			? sendParams.receiveEmail.map(address => [address])

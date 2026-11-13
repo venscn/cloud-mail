@@ -245,6 +245,8 @@ const zh = {
     channelQq: 'QQ 邮箱 SMTP',
     channelConfigured: '已配置',
     channelNotConfigured: '未配置',
+    channelDisabled: '已禁用',
+    cfEmailNoBindingTip: '需要先在 wrangler.toml 配置 [[send_email]] name = "email" 绑定后重新部署',
     domain: '域名',
     optional: '可选',
     subjectInputDesc: '请输入邮件主题',

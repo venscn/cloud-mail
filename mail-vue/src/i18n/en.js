@@ -245,6 +245,8 @@ const en = {
     channelQq: 'QQ Mail SMTP',
     channelConfigured: 'Configured',
     channelNotConfigured: 'Not configured',
+    channelDisabled: 'Disabled',
+    cfEmailNoBindingTip: 'Add the [[send_email]] name = "email" binding to wrangler.toml and redeploy first',
     domain: 'Domain',
     optional: 'Optional',
     subjectInputDesc: 'Please enter the email subject',

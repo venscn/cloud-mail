@@ -773,10 +773,16 @@ Authorization: &lt;secret&gt;</pre>
       <el-dialog v-model="sendChainShow" :title="$t('sendChainPriority')" width="380">
         <div class="send-chain-list">
           <div v-for="(channel, index) in sendChainList" :key="channel"
-               class="send-chain-item" :class="{ unavailable: !channelConfigured(channel) }">
+               class="send-chain-item" :class="{ unavailable: !channelConfigured(channel) || (channel === 'cf' && setting.cfEmailEnabled === 0) }">
             <span class="chain-order">{{ index + 1 }}</span>
             <span class="chain-name">{{ channelName(channel) }}</span>
-            <span class="chain-status">{{ channelConfigured(channel) ? $t('channelConfigured') : $t('channelNotConfigured') }}</span>
+            <span class="chain-status">{{ channelStatusText(channel) }}</span>
+            <el-tooltip v-if="channel === 'cf'" effect="dark" :content="$t('cfEmailNoBindingTip')" :disabled="!!setting.hasCfEmail">
+              <span class="chain-switch">
+                <el-switch v-model="setting.cfEmailEnabled" :active-value="1" :inactive-value="0"
+                           :before-change="beforeChange" :disabled="!setting.hasCfEmail" @change="changeCfEmailEnabled"/>
+              </span>
+            </el-tooltip>
             <el-button link type="primary" :disabled="index === 0" @click="moveChain(index, -1)">
               <Icon icon="material-symbols:arrow-upward-rounded" width="18" height="18"/>
             </el-button>
@@ -1058,7 +1064,7 @@ const smtpChannelForm = reactive({
   defaultHost: ''
 })
 const sendChainList = ref([])
-const defaultSendChain = ['cf', 'sendpulse', 'resend', 'qq']
+const defaultSendChain = ['sendpulse', 'resend', 'qq', 'cf']
 const turnstileForm = reactive({
   siteKey: '',
   secretKey: ''
@@ -1769,6 +1775,16 @@ function channelConfigured(channel) {
   if (channel === 'resend') return Object.keys(setting.value.resendTokens || {}).length > 0
   const conf = setting.value.smtpChannels?.[channel]
   return !!(conf && conf.user && conf.pass)
+}
+
+function channelStatusText(channel) {
+  if (channel === 'cf' && setting.value.cfEmailEnabled === 0) return t('channelDisabled')
+  return channelConfigured(channel) ? t('channelConfigured') : t('channelNotConfigured')
+}
+
+function changeCfEmailEnabled(value) {
+  if (settingLoading.value) return
+  editSetting({cfEmailEnabled: value})
 }
 
 function moveChain(index, direction) {

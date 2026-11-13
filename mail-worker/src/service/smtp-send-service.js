@@ -92,6 +92,11 @@ const smtpSendService = {
 			subject: params.subject
 		};
 
+		// QQ 等渠道 From 必须是渠道账号本身，用 Reply-To 指回真实发件人，收件人回复会回到其 @域名 地址
+		if (fromEmail !== params.accountEmail) {
+			sendForm.reply = params.accountEmail;
+		}
+
 		if (params.ccEmail.length > 0) {
 			sendForm.cc = [...params.ccEmail];
 		}
