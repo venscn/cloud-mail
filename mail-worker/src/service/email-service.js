@@ -616,7 +616,7 @@ const emailService = {
 		}
 	},
 
-	// 构建外发渠道降级链：顺序由系统设置 sendChain 决定（默认 sendpulse -> resend -> qq -> cf），
+	// 构建外发渠道降级链：顺序由系统设置 sendChain 决定（默认 resend -> sendpulse -> qq -> cf），
 	// 只保留当前可用的渠道；CF 绑定不计配额，其余渠道按每日配额降级。
 	// CF 绑定渠道还需系统设置 cfEmailEnabled 开启才可用。
 	buildChannelChain(c, { resendToken, smtpChannels, sendChain, cfEmailEnabled }) {
@@ -663,7 +663,7 @@ const emailService = {
 
 		const order = Array.isArray(sendChain) && sendChain.length > 0
 			? sendChain
-			: ['sendpulse', 'resend', 'qq', 'cf'];
+			: ['resend', 'sendpulse', 'qq', 'cf'];
 
 		const channels = [];
 		for (const name of order) {

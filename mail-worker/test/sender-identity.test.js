@@ -247,6 +247,31 @@ describe('QQ sender identity fallback', () => {
 });
 
 
+describe('Sending channel priority', () => {
+	const configured = () => ({
+		resendToken: 'test-placeholder-token',
+		smtpChannels: {
+			sendpulse: { user: 'smtp-login@example.test', pass: 'placeholder' },
+			qq: { user: 'qq-login@example.test', pass: 'placeholder' }
+		}
+	});
+	it.each([undefined, []])('defaults to Resend, SendPulse, QQ, CF when order is %j', sendChain => {
+		const channels = emailService.buildChannelChain({ env: { email: {} } }, { ...configured(), sendChain });
+		expect(channels.map(channel => channel.name)).toEqual(['resend', 'sendpulse', 'qq', 'cf']);
+		expect(connect).not.toHaveBeenCalled();
+	});
+	it('continues to honor an administrator-defined priority', () => {
+		const sendChain = ['qq', 'resend', 'sendpulse', 'cf'];
+		const channels = emailService.buildChannelChain({ env: { email: {} } }, { ...configured(), sendChain });
+		expect(channels.map(channel => channel.name)).toEqual(sendChain);
+	});
+	it('skips unavailable Resend without disturbing the remaining priority', () => {
+		const channels = emailService.buildChannelChain({ env: { email: {} } }, { ...configured(), resendToken: '' });
+		expect(channels.map(channel => channel.name)).toEqual(['sendpulse', 'qq', 'cf']);
+	});
+});
+
+
 describe('API channel sender identity', () => {
 	it.each(['alice@example.com', 'any.other@example.com'])('Cloudflare binding receives actual account %s and unmodified display name', async accountEmail => {
 		const send = vi.fn().mockResolvedValue({ messageId: 'cf-id' });

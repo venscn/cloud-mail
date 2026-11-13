@@ -52,7 +52,7 @@ const dbInit = {
 		try {
 			await c.env.db.batch([
 				c.env.db.prepare(`ALTER TABLE setting ADD COLUMN smtp_channels TEXT NOT NULL DEFAULT '{}';`),
-				c.env.db.prepare(`ALTER TABLE setting ADD COLUMN send_chain TEXT NOT NULL DEFAULT '["sendpulse","resend","qq","cf"]';`)
+				c.env.db.prepare(`ALTER TABLE setting ADD COLUMN send_chain TEXT NOT NULL DEFAULT '["resend","sendpulse","qq","cf"]';`)
 			]);
 		} catch (e) {
 			console.warn(`跳过字段：${e.message}`);

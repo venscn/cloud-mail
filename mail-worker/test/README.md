@@ -18,5 +18,14 @@ Coverage includes:
 - SendPulse authorized envelope versus actual visible account, dynamic same-domain addresses, lowercase names, threading headers, display-name escaping, CRLF injection prevention, validation before connecting, immutability, and connection cleanup after failure.
 - QQ login-address From, actual account Reply-To, plain/HTML identity notices at the beginning of the body, HTML escaping, full-document notice placement, unsafe mailbox rejection, name injection prevention, single-format bodies, and input immutability.
 - Dynamic actual-account From values for Cloudflare and Resend.
+- Default Resend → SendPulse → QQ → CF priority, administrator overrides, and skipping unavailable channels.
+
+For the settings dialog regression tests, from `mail-vue` run:
+
+```powershell
+node --test test/send-chain.test.mjs
+```
+
+These use Vue's SFC parser to execute the actual `openSendChain` / `moveChain` handlers with mocked HTTP and notifications. They cover saving and reopening, preserving the committed order for later settings updates, rollback on failure, blocking overlapping saves, readiness, and move boundaries. They do not render a browser UI.
 
 These are serialization/contract tests, not provider-delivery tests. Provider acceptance, domain authorization, final recipient display and delivery still need separately authorized live checks.

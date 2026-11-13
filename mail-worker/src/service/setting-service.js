@@ -18,7 +18,7 @@ const settingService = {
 		const settingRow = await orm(c).select().from(setting).get();
 		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
 		settingRow.smtpChannels = JSON.parse(settingRow.smtpChannels || '{}');
-		settingRow.sendChain = JSON.parse(settingRow.sendChain || '["sendpulse","resend","qq","cf"]');
+		settingRow.sendChain = JSON.parse(settingRow.sendChain || '["resend","sendpulse","qq","cf"]');
 		settingRow.r2Domain = '';
 		c.set('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));

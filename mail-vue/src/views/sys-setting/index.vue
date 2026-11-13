@@ -788,10 +788,10 @@ Authorization: &lt;secret&gt;</pre>
                            :before-change="beforeChange" :disabled="!setting.hasCfEmail" @change="changeCfEmailEnabled"/>
               </span>
             </el-tooltip>
-            <el-button link type="primary" :disabled="index === 0" @click="moveChain(index, -1)">
+            <el-button link type="primary" :disabled="!settingReady || settingLoading || index === 0" @click="moveChain(index, -1)">
               <Icon icon="material-symbols:arrow-upward-rounded" width="18" height="18"/>
             </el-button>
-            <el-button link type="primary" :disabled="index === sendChainList.length - 1" @click="moveChain(index, 1)">
+            <el-button link type="primary" :disabled="!settingReady || settingLoading || index === sendChainList.length - 1" @click="moveChain(index, 1)">
               <Icon icon="material-symbols:arrow-downward-rounded" width="18" height="18"/>
             </el-button>
           </div>
@@ -1070,7 +1070,7 @@ const smtpChannelForm = reactive({
   envelopeFrom: ''
 })
 const sendChainList = ref([])
-const defaultSendChain = ['sendpulse', 'resend', 'qq', 'cf']
+const defaultSendChain = ['resend', 'sendpulse', 'qq', 'cf']
 const turnstileForm = reactive({
   siteKey: '',
   secretKey: ''
@@ -1795,14 +1795,27 @@ function changeCfEmailEnabled(value) {
   editSetting({cfEmailEnabled: value})
 }
 
-function moveChain(index, direction) {
+async function moveChain(index, direction) {
+  if (!settingReady.value || settingLoading.value) return
   const target = index + direction
-  if (target < 0 || target >= sendChainList.value.length) return
-  const list = [...sendChainList.value]
+  if (index < 0 || index >= sendChainList.value.length || target < 0 || target >= sendChainList.value.length) return
+  const previous = [...sendChainList.value]
+  const list = [...previous]
   const [item] = list.splice(index, 1)
   list.splice(target, 0, item)
+  settingLoading.value = true
   sendChainList.value = list
-  editSetting({sendChain: [...list]}, false)
+  try {
+    await settingSet({sendChain: [...list]})
+    // Reopening the dialog and subsequent settings updates must use the saved order.
+    setting.value.sendChain = [...list]
+    ElMessage({message: t('saveSuccessMsg'), type: 'success', plain: true})
+  } catch {
+    // Request errors are displayed by the API interceptor; do not leave an unsaved order visible.
+    sendChainList.value = previous
+  } finally {
+    settingLoading.value = false
+  }
 }
 
 function backupSetting() {
