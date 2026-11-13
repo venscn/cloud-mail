@@ -207,9 +207,9 @@
               <div class="setting-item">
                 <div><span>{{ $t('smtpChannels') }}</span></div>
                 <div class="forward">
-                  <el-button class="opt-button" style="margin-top: 0" @click="openSmtpChannel('brevo')" size="small"
+                  <el-button class="opt-button" style="margin-top: 0" @click="openSmtpChannel('sendpulse')" size="small"
                              type="primary">
-                    Brevo
+                    SendPulse
                   </el-button>
                   <el-button class="opt-button" style="margin-top: 0" @click="openSmtpChannel('qq')" size="small"
                              type="primary">
@@ -1044,7 +1044,7 @@ const resendTokenForm = reactive({
 const smtpChannelShow = ref(false)
 const sendChainShow = ref(false)
 const smtpDefaultHosts = {
-  brevo: 'smtp-relay.brevo.com',
+  sendpulse: 'smtp-pulse.com',
   qq: 'smtp.qq.com'
 }
 const smtpChannelForm = reactive({
@@ -1058,7 +1058,7 @@ const smtpChannelForm = reactive({
   defaultHost: ''
 })
 const sendChainList = ref([])
-const defaultSendChain = ['cf', 'brevo', 'resend', 'qq']
+const defaultSendChain = ['cf', 'sendpulse', 'resend', 'qq']
 const turnstileForm = reactive({
   siteKey: '',
   secretKey: ''
@@ -1720,12 +1720,12 @@ function openSmtpChannel(channel) {
   if (settingLoading.value) return
   const conf = setting.value.smtpChannels?.[channel] || {}
   smtpChannelForm.key = channel
-  smtpChannelForm.label = channel === 'brevo' ? 'Brevo' : 'QQ'
+  smtpChannelForm.label = channel === 'sendpulse' ? 'SendPulse' : 'QQ'
   smtpChannelForm.user = conf.user || ''
   smtpChannelForm.pass = conf.pass || ''
   smtpChannelForm.host = conf.host || ''
-  smtpChannelForm.port = conf.port || (channel === 'brevo' ? 587 : 465)
-  smtpChannelForm.dailyLimit = conf.dailyLimit || (channel === 'brevo' ? 300 : 100)
+  smtpChannelForm.port = conf.port || 465
+  smtpChannelForm.dailyLimit = conf.dailyLimit || (channel === 'sendpulse' ? 400 : 100)
   smtpChannelForm.defaultHost = smtpDefaultHosts[channel]
   smtpChannelShow.value = true
 }
@@ -1757,7 +1757,7 @@ function openSendChain() {
 function channelName(channel) {
   const names = {
     cf: t('channelCf'),
-    brevo: t('channelBrevo'),
+    sendpulse: t('channelSendPulse'),
     resend: t('channelResend'),
     qq: t('channelQq')
   }

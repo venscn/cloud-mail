@@ -2,16 +2,16 @@ import { WorkerMailer } from 'worker-mailer';
 import kvConst from '../const/kv-const';
 import fileUtils from '../utils/file-utils';
 
-// 渠道每日配额默认值，可通过环境变量 brevo_daily_limit / resend_daily_limit / qq_daily_limit 覆盖
+// 渠道每日配额默认值，可通过环境变量 sendpulse_daily_limit / resend_daily_limit / qq_daily_limit 覆盖
 const DAILY_LIMITS = {
-	brevo: 300,
+	sendpulse: 400,
 	resend: 100,
 	qq: 100
 };
 
 // SMTP 渠道默认连接配置（Workers 出站 25 端口被封，只用 465/587）
 const SMTP_DEFAULTS = {
-	brevo: { host: 'smtp-relay.brevo.com', port: 587, secure: false, startTls: true },
+	sendpulse: { host: 'smtp-pulse.com', port: 465, secure: true, startTls: false },
 	qq: { host: 'smtp.qq.com', port: 465, secure: true, startTls: false }
 };
 

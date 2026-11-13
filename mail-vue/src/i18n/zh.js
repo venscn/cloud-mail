@@ -240,7 +240,7 @@ const zh = {
     sendChainPriority: '发信渠道优先级',
     sendChainPriorityDesc: '发信按顺序尝试渠道，配额耗尽或发送受限时自动降级到下一渠道',
     channelCf: 'Cloudflare 绑定',
-    channelBrevo: 'Brevo SMTP',
+    channelSendPulse: 'SendPulse SMTP',
     channelResend: 'Resend',
     channelQq: 'QQ 邮箱 SMTP',
     channelConfigured: '已配置',

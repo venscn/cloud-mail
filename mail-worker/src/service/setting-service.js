@@ -17,7 +17,7 @@ const settingService = {
 		const settingRow = await orm(c).select().from(setting).get();
 		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
 		settingRow.smtpChannels = JSON.parse(settingRow.smtpChannels || '{}');
-		settingRow.sendChain = JSON.parse(settingRow.sendChain || '["cf","brevo","resend","qq"]');
+		settingRow.sendChain = JSON.parse(settingRow.sendChain || '["cf","sendpulse","resend","qq"]');
 		settingRow.r2Domain = '';
 		c.set('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
@@ -151,7 +151,7 @@ const settingService = {
 
 		// 降级链顺序只接受合法渠道标识组成的非空数组，非法则忽略
 		if (params.sendChain !== undefined) {
-			const validChannels = ['cf', 'brevo', 'resend', 'qq'];
+			const validChannels = ['cf', 'sendpulse', 'resend', 'qq'];
 			if (Array.isArray(params.sendChain) && params.sendChain.length > 0
 				&& params.sendChain.every(channel => validChannels.includes(channel))) {
 				params.sendChain = JSON.stringify(params.sendChain);

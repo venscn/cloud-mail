@@ -52,16 +52,16 @@ crons = ["0 * * * *"]	#每小时执行；resetDaySendCount 仅在 UTC 0 点生�
 #jwt_secret = ""			#jwt令牌的密钥,随便填一串字符串
 
 # ===== 多渠道发件降级链（本 fork 新增功能）=====
-# 渠道优先级: CF email绑定 -> Brevo SMTP -> Resend -> QQ SMTP
+# 渠道优先级: CF email绑定 -> SendPulse SMTP -> Resend -> QQ SMTP
 # 每个渠道有独立的每日配额，用量耗尽后自动降级到下一渠道
 # 密码类配置请用 wrangler secret put 设置，不要写在这里：
-#   wrangler secret put brevo_smtp_pass
+#   wrangler secret put sendpulse_smtp_pass
 #   wrangler secret put qq_smtp_pass
 #
-#brevo_smtp_user = ""			#Brevo SMTP 登录名（Brevo 后台 SMTP&API 页面获取）
-#brevo_smtp_host = ""			#默认 smtp-relay.brevo.com，一般不填
-#brevo_smtp_port = 587			#默认 587 (STARTTLS)
-#brevo_daily_limit = 300			#Brevo 免费版每日 300 封
+#sendpulse_smtp_user = ""			#SendPulse SMTP 登录名（SendPulse 后台 SMTP 页面获取）
+#sendpulse_smtp_host = ""			#默认 smtp-pulse.com，一般不填
+#sendpulse_smtp_port = 465			#默认 465 (SSL)
+#sendpulse_daily_limit = 400			#SendPulse 免费版每月 12000 封，按日限 400
 #
 #resend_daily_limit = 100			#Resend 免费版每日 100 封；resendTokens 在系统设置页配置
 #

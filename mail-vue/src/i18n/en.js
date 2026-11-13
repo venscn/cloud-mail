@@ -240,7 +240,7 @@ const en = {
     sendChainPriority: 'Sending channel priority',
     sendChainPriorityDesc: 'Channels are tried in order; when quota is exhausted or sending is rate-limited, the next channel takes over',
     channelCf: 'Cloudflare binding',
-    channelBrevo: 'Brevo SMTP',
+    channelSendPulse: 'SendPulse SMTP',
     channelResend: 'Resend',
     channelQq: 'QQ Mail SMTP',
     channelConfigured: 'Configured',

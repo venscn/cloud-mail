@@ -495,11 +495,11 @@ const emailService = {
 		const domain = emailUtils.getDomain(accountRow.email);
 		const resendToken = resendTokens[domain];
 		const useCloudflareEmail = !!c.env.email;
-		const useBrevoSmtp = !!smtpSendService.getSmtpConfig(c, 'brevo', smtpChannels);
+		const useSendPulseSmtp = !!smtpSendService.getSmtpConfig(c, 'sendpulse', smtpChannels);
 		const useQqSmtp = !!smtpSendService.getSmtpConfig(c, 'qq', smtpChannels);
 
 		//如果接收方存在站外邮箱，又没有发信服务
-		if (!useCloudflareEmail && !useBrevoSmtp && !resendToken && !useQqSmtp && !allInternal) {
+		if (!useCloudflareEmail && !useSendPulseSmtp && !resendToken && !useQqSmtp && !allInternal) {
 			throw new BizError(t('noSendProvider'));
 		}
 
@@ -565,7 +565,7 @@ const emailService = {
 		};
 
 		// 全部站内收件人走本地投递；存在站外收件人时按系统设置 sendChain 的
-		// 渠道顺序（默认 CF 绑定 -> Brevo SMTP -> Resend -> QQ SMTP）降级发送
+		// 渠道顺序（默认 CF 绑定 -> SendPulse SMTP -> Resend -> QQ SMTP）降级发送
 		let deliveries;
 		if (allInternal) {
 			deliveries = this.sendInternal(c, context);
@@ -616,7 +616,7 @@ const emailService = {
 		}
 	},
 
-	// 构建外发渠道降级链：顺序由系统设置 sendChain 决定（默认 cf -> brevo -> resend -> qq），
+	// 构建外发渠道降级链：顺序由系统设置 sendChain 决定（默认 cf -> sendpulse -> resend -> qq），
 	// 只保留当前可用的渠道；CF 绑定不计配额，其余渠道按每日配额降级。
 	buildChannelChain(c, { resendToken, smtpChannels, sendChain }) {
 		const builders = {
@@ -626,13 +626,13 @@ const emailService = {
 				send: params => this.sendByCloudflareEmail(c, params)
 			} : null,
 
-			brevo: () => {
-				const brevoConfig = smtpSendService.getSmtpConfig(c, 'brevo', smtpChannels);
-				return brevoConfig ? {
-					name: 'brevo',
-					limit: smtpSendService.getDailyLimit(c, 'brevo', smtpChannels),
-					// Brevo 的 From 用发件账号地址（发件域名已在 Brevo 验证）
-					send: params => smtpSendService.sendBySmtp(brevoConfig, params, params.accountEmail)
+			sendpulse: () => {
+				const sendpulseConfig = smtpSendService.getSmtpConfig(c, 'sendpulse', smtpChannels);
+				return sendpulseConfig ? {
+					name: 'sendpulse',
+					limit: smtpSendService.getDailyLimit(c, 'sendpulse', smtpChannels),
+					// SendPulse 的 From 用发件账号地址（发件域名已在 SendPulse 验证）
+					send: params => smtpSendService.sendBySmtp(sendpulseConfig, params, params.accountEmail)
 				} : null;
 			},
 
@@ -662,7 +662,7 @@ const emailService = {
 
 		const order = Array.isArray(sendChain) && sendChain.length > 0
 			? sendChain
-			: ['cf', 'brevo', 'resend', 'qq'];
+			: ['cf', 'sendpulse', 'resend', 'qq'];
 
 		const channels = [];
 		for (const name of order) {

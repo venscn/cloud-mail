@@ -69,6 +69,6 @@ export const setting = sqliteTable('setting', {
 	webhookRetry: integer('webhook_retry').default(0).notNull(),
 	webhookSecret: text('webhook_secret').default('').notNull(),
 	smtpChannels: text('smtp_channels').default("{}").notNull(),
-	sendChain: text('send_chain').default('["cf","brevo","resend","qq"]').notNull()
+	sendChain: text('send_chain').default('["cf","sendpulse","resend","qq"]').notNull()
 });
 export default setting
