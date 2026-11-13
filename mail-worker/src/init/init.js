@@ -34,8 +34,20 @@ const dbInit = {
 		await this.v3_3DB(c);
 		await this.v3_4DB(c);
 		await this.v3_5DB(c);
+		await this.v3_6DB(c);
 		await settingService.refresh(c);
 		return c.text('success');
+	},
+
+	async v3_6DB(c) {
+		try {
+			await c.env.db.batch([
+				c.env.db.prepare(`ALTER TABLE setting ADD COLUMN smtp_channels TEXT NOT NULL DEFAULT '{}';`),
+				c.env.db.prepare(`ALTER TABLE setting ADD COLUMN send_chain TEXT NOT NULL DEFAULT '["cf","brevo","resend","qq"]';`)
+			]);
+		} catch (e) {
+			console.warn(`跳过字段：${e.message}`);
+		}
 	},
 
 	async v3_5DB(c) {

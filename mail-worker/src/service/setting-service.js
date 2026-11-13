@@ -16,6 +16,8 @@ const settingService = {
 	async refresh(c) {
 		const settingRow = await orm(c).select().from(setting).get();
 		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
+		settingRow.smtpChannels = JSON.parse(settingRow.smtpChannels || '{}');
+		settingRow.sendChain = JSON.parse(settingRow.sendChain || '["cf","brevo","resend","qq"]');
 		settingRow.r2Domain = '';
 		c.set('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
@@ -85,6 +87,14 @@ const settingService = {
 			settingRow.resendTokens[key] = `${settingRow.resendTokens[key].slice(0, 12)}******`;
 		});
 
+		// SMTP 渠道密码打码回显（user 不打码），前端原样回传掩码时服务端保留旧值
+		Object.keys(settingRow.smtpChannels || {}).forEach(channel => {
+			const conf = settingRow.smtpChannels[channel];
+			if (conf && conf.pass) {
+				conf.pass = `${conf.pass.slice(0, 4)}******`;
+			}
+		});
+
 		settingRow.s3AccessKey = settingRow.s3AccessKey ? `${settingRow.s3AccessKey.slice(0, 12)}******` : null;
 		settingRow.s3SecretKey = settingRow.s3SecretKey ? `${settingRow.s3SecretKey.slice(0, 12)}******` : null;
 		settingRow.tgBotToken = settingRow.tgBotToken ? `${settingRow.tgBotToken.slice(0, 20)}******` : null;
@@ -117,6 +127,38 @@ const settingService = {
 		Object.keys(resendTokens).forEach(domain => {
 			if (!resendTokens[domain]) delete resendTokens[domain];
 		});
+
+		// SMTP 渠道配置按 key 合并；传 null 删除渠道；密码为掩码（****** 结尾）时保留旧值
+		if (params.smtpChannels !== undefined) {
+			const smtpChannels = { ...(settingData.smtpChannels || {}) };
+			Object.keys(params.smtpChannels || {}).forEach(channel => {
+				const value = params.smtpChannels[channel];
+				if (!value) {
+					delete smtpChannels[channel];
+					return;
+				}
+				const prev = smtpChannels[channel] || {};
+				const merged = { ...prev, ...value };
+				if (typeof value.pass === 'string' && value.pass.endsWith('******')) {
+					merged.pass = prev.pass || '';
+				}
+				merged.port = Number(merged.port) || 0;
+				merged.dailyLimit = Number(merged.dailyLimit) || 0;
+				smtpChannels[channel] = merged;
+			});
+			params.smtpChannels = JSON.stringify(smtpChannels);
+		}
+
+		// 降级链顺序只接受合法渠道标识组成的非空数组，非法则忽略
+		if (params.sendChain !== undefined) {
+			const validChannels = ['cf', 'brevo', 'resend', 'qq'];
+			if (Array.isArray(params.sendChain) && params.sendChain.length > 0
+				&& params.sendChain.every(channel => validChannels.includes(channel))) {
+				params.sendChain = JSON.stringify(params.sendChain);
+			} else {
+				delete params.sendChain;
+			}
+		}
 
 		if (Array.isArray(params.emailPrefixFilter)) {
 			params.emailPrefixFilter = params.emailPrefixFilter + '';

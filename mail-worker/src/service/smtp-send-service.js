@@ -20,8 +20,12 @@ const QUOTA_TTL = 172800;
 
 const smtpSendService = {
 
-	// 取渠道当日配额上限，环境变量覆盖默认值
-	getDailyLimit(c, channel) {
+	// 取渠道当日配额上限：系统设置 dailyLimit > 环境变量 > 内置默认
+	getDailyLimit(c, channel, smtpChannels) {
+		const settingValue = Number(smtpChannels?.[channel]?.dailyLimit);
+		if (Number.isFinite(settingValue) && settingValue > 0) {
+			return Math.floor(settingValue);
+		}
 		const envValue = Number(c.env[`${channel}_daily_limit`]);
 		return Number.isFinite(envValue) && envValue > 0 ? Math.floor(envValue) : DAILY_LIMITS[channel];
 	},
@@ -59,17 +63,19 @@ const smtpSendService = {
 		return /\b429\b|quota|rate[\s_-]*limit|limit exceeded|too many|throttl/.test(message);
 	},
 
-	// 读取 SMTP 渠道配置，user+pass 都配置了才算可用，未配置返回 null
-	getSmtpConfig(c, channel) {
-		const user = c.env[`${channel}_smtp_user`];
-		const pass = c.env[`${channel}_smtp_pass`];
+	// 读取 SMTP 渠道配置：优先系统设置 smtpChannels，环境变量（兼容旧部署）按字段后备。
+	// user+pass 都配置了才算可用，未配置返回 null
+	getSmtpConfig(c, channel, smtpChannels) {
+		const settingConf = smtpChannels?.[channel] || {};
+		const user = settingConf.user || c.env[`${channel}_smtp_user`];
+		const pass = settingConf.pass || c.env[`${channel}_smtp_pass`];
 		if (!user || !pass) {
 			return null;
 		}
 		const defaults = SMTP_DEFAULTS[channel];
 		return {
-			host: c.env[`${channel}_smtp_host`] || defaults.host,
-			port: Number(c.env[`${channel}_smtp_port`]) || defaults.port,
+			host: settingConf.host || c.env[`${channel}_smtp_host`] || defaults.host,
+			port: Number(settingConf.port) || Number(c.env[`${channel}_smtp_port`]) || defaults.port,
 			secure: defaults.secure,
 			startTls: defaults.startTls,
 			credentials: { username: user, password: pass },

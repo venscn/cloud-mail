@@ -205,6 +205,33 @@
                 </div>
               </div>
               <div class="setting-item">
+                <div><span>{{ $t('smtpChannels') }}</span></div>
+                <div class="forward">
+                  <el-button class="opt-button" style="margin-top: 0" @click="openSmtpChannel('brevo')" size="small"
+                             type="primary">
+                    Brevo
+                  </el-button>
+                  <el-button class="opt-button" style="margin-top: 0" @click="openSmtpChannel('qq')" size="small"
+                             type="primary">
+                    QQ
+                  </el-button>
+                </div>
+              </div>
+              <div class="setting-item">
+                <div>
+                  <span>{{ $t('sendChainPriority') }}</span>
+                  <el-tooltip effect="dark" :content="$t('sendChainPriorityDesc')">
+                    <Icon class="warning" icon="fe:warning" width="18" height="18"/>
+                  </el-tooltip>
+                </div>
+                <div>
+                  <el-button class="opt-button" style="margin-top: 0" @click="openSendChain" size="small"
+                             type="primary">
+                    <Icon icon="fluent:settings-48-regular" width="16" height="16"/>
+                  </el-button>
+                </div>
+              </div>
+              <div class="setting-item">
                 <div><span>{{ $t('blackList') }}</span></div>
                 <div>
                   <el-button class="opt-button" style="margin-top: 0" @click="openBlackListForm" size="small"
@@ -725,6 +752,40 @@ Authorization: &lt;secret&gt;</pre>
                            :show-overflow-tooltip="true"/>
         </el-table>
       </el-dialog>
+      <el-dialog v-model="smtpChannelShow" :title="$t('smtpChannelSetting') + ' - ' + smtpChannelForm.label" width="340">
+        <form @submit.prevent>
+          <el-input type="text" :placeholder="$t('smtpUser')" v-model="smtpChannelForm.user"/>
+          <el-input type="text" style="margin-top: 15px" :placeholder="$t('smtpPass')" v-model="smtpChannelForm.pass"/>
+          <div class="smtp-pass-tip">{{ $t('smtpPassKeep') }}</div>
+          <el-input type="text" style="margin-top: 15px" :placeholder="smtpChannelForm.defaultHost" v-model="smtpChannelForm.host"/>
+          <div style="margin-top: 15px; display: flex; gap: 15px">
+            <el-input-number v-model="smtpChannelForm.port" :min="1" :max="65535" :placeholder="$t('smtpPort')" style="flex: 1"/>
+            <el-input-number v-model="smtpChannelForm.dailyLimit" :min="0" :placeholder="$t('smtpDailyLimit')" style="flex: 1"/>
+          </div>
+        </form>
+        <template #footer>
+          <div class="dialog-footer">
+            <el-button type="danger" link @click="clearSmtpChannel">{{ $t('clearChannel') }}</el-button>
+            <el-button type="primary" :loading="settingLoading" @click="saveSmtpChannel">{{ $t('save') }}</el-button>
+          </div>
+        </template>
+      </el-dialog>
+      <el-dialog v-model="sendChainShow" :title="$t('sendChainPriority')" width="380">
+        <div class="send-chain-list">
+          <div v-for="(channel, index) in sendChainList" :key="channel"
+               class="send-chain-item" :class="{ unavailable: !channelConfigured(channel) }">
+            <span class="chain-order">{{ index + 1 }}</span>
+            <span class="chain-name">{{ channelName(channel) }}</span>
+            <span class="chain-status">{{ channelConfigured(channel) ? $t('channelConfigured') : $t('channelNotConfigured') }}</span>
+            <el-button link type="primary" :disabled="index === 0" @click="moveChain(index, -1)">
+              <Icon icon="material-symbols:arrow-upward-rounded" width="18" height="18"/>
+            </el-button>
+            <el-button link type="primary" :disabled="index === sendChainList.length - 1" @click="moveChain(index, 1)">
+              <Icon icon="material-symbols:arrow-downward-rounded" width="18" height="18"/>
+            </el-button>
+          </div>
+        </div>
+      </el-dialog>
       <el-dialog v-model="regVerifyCountShow" :title="$t('rulesVerifyTitle',{count: regVerifyCount})"
                  @closed="regVerifyCount = setting.regVerifyCount">
         <form @submit.prevent>
@@ -979,6 +1040,25 @@ const resendTokenForm = reactive({
   domain: '',
   token: '',
 })
+
+const smtpChannelShow = ref(false)
+const sendChainShow = ref(false)
+const smtpDefaultHosts = {
+  brevo: 'smtp-relay.brevo.com',
+  qq: 'smtp.qq.com'
+}
+const smtpChannelForm = reactive({
+  key: '',
+  label: '',
+  user: '',
+  pass: '',
+  host: '',
+  port: 0,
+  dailyLimit: 0,
+  defaultHost: ''
+})
+const sendChainList = ref([])
+const defaultSendChain = ['cf', 'brevo', 'resend', 'qq']
 const turnstileForm = reactive({
   siteKey: '',
   secretKey: ''
@@ -1636,9 +1716,75 @@ function saveResendToken() {
   editSetting(settingForm)
 }
 
+function openSmtpChannel(channel) {
+  if (settingLoading.value) return
+  const conf = setting.value.smtpChannels?.[channel] || {}
+  smtpChannelForm.key = channel
+  smtpChannelForm.label = channel === 'brevo' ? 'Brevo' : 'QQ'
+  smtpChannelForm.user = conf.user || ''
+  smtpChannelForm.pass = conf.pass || ''
+  smtpChannelForm.host = conf.host || ''
+  smtpChannelForm.port = conf.port || (channel === 'brevo' ? 587 : 465)
+  smtpChannelForm.dailyLimit = conf.dailyLimit || (channel === 'brevo' ? 300 : 100)
+  smtpChannelForm.defaultHost = smtpDefaultHosts[channel]
+  smtpChannelShow.value = true
+}
+
+function saveSmtpChannel() {
+  editSetting({
+    smtpChannels: {
+      [smtpChannelForm.key]: {
+        user: smtpChannelForm.user,
+        pass: smtpChannelForm.pass,
+        host: smtpChannelForm.host,
+        port: smtpChannelForm.port,
+        dailyLimit: smtpChannelForm.dailyLimit
+      }
+    }
+  })
+}
+
+function clearSmtpChannel() {
+  editSetting({smtpChannels: {[smtpChannelForm.key]: null}})
+}
+
+function openSendChain() {
+  if (settingLoading.value) return
+  sendChainList.value = [...(setting.value.sendChain || defaultSendChain)]
+  sendChainShow.value = true
+}
+
+function channelName(channel) {
+  const names = {
+    cf: t('channelCf'),
+    brevo: t('channelBrevo'),
+    resend: t('channelResend'),
+    qq: t('channelQq')
+  }
+  return names[channel] || channel
+}
+
+function channelConfigured(channel) {
+  if (channel === 'cf') return !!setting.value.hasCfEmail
+  if (channel === 'resend') return Object.keys(setting.value.resendTokens || {}).length > 0
+  const conf = setting.value.smtpChannels?.[channel]
+  return !!(conf && conf.user && conf.pass)
+}
+
+function moveChain(index, direction) {
+  const target = index + direction
+  if (target < 0 || target >= sendChainList.value.length) return
+  const list = [...sendChainList.value]
+  const [item] = list.splice(index, 1)
+  list.splice(target, 0, item)
+  sendChainList.value = list
+  editSetting({sendChain: [...list]}, false)
+}
+
 function backupSetting() {
   const settingForm = {...setting.value}
   delete settingForm.resendTokens
+  delete settingForm.smtpChannels
   delete settingForm.siteKey
   delete settingForm.secretKey
   backup = JSON.stringify(setting.value)
@@ -1663,6 +1809,7 @@ function change(e) {
   delete settingForm.s3SecretKey
   delete settingForm.tgBotToken
   delete settingForm.resendTokens
+  delete settingForm.smtpChannels
   editSetting(settingForm, false)
 }
 
@@ -1702,6 +1849,7 @@ function editSetting(settingForm, refreshStatus = true) {
     }
     editTitleShow.value = false
     resendTokenFormShow.value = false
+    smtpChannelShow.value = false
     turnstileShow.value = false
     tgSettingShow.value = false
     thirdEmailShow.value = false
@@ -1886,6 +2034,58 @@ function editSetting(settingForm, refreshStatus = true) {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.smtp-pass-tip {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.send-chain-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.send-chain-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+
+  .chain-order {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--el-color-primary);
+    color: #fff;
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .chain-name {
+    flex: 1;
+    font-size: 14px;
+  }
+
+  .chain-status {
+    font-size: 12px;
+    color: var(--el-color-success);
+  }
+
+  &.unavailable {
+    opacity: 0.5;
+
+    .chain-status {
+      color: var(--el-text-color-secondary);
+    }
+  }
 }
 
 .webhook-footer-right {

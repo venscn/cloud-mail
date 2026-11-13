@@ -418,7 +418,7 @@ const emailService = {
 		ccEmail.forEach(address => takenAddress.add(address.toLowerCase()));
 		bccEmail = bccEmail.filter(address => !takenAddress.has(address.toLowerCase()));
 
-		const { resendTokens, r2Domain, send, domainList } = await settingService.query(c);
+		const { resendTokens, r2Domain, send, domainList, smtpChannels, sendChain } = await settingService.query(c);
 
 		let { imageDataList, html } = await attService.toImageUrlHtml(c, content);
 
@@ -495,8 +495,8 @@ const emailService = {
 		const domain = emailUtils.getDomain(accountRow.email);
 		const resendToken = resendTokens[domain];
 		const useCloudflareEmail = !!c.env.email;
-		const useBrevoSmtp = !!smtpSendService.getSmtpConfig(c, 'brevo');
-		const useQqSmtp = !!smtpSendService.getSmtpConfig(c, 'qq');
+		const useBrevoSmtp = !!smtpSendService.getSmtpConfig(c, 'brevo', smtpChannels);
+		const useQqSmtp = !!smtpSendService.getSmtpConfig(c, 'qq', smtpChannels);
 
 		//如果接收方存在站外邮箱，又没有发信服务
 		if (!useCloudflareEmail && !useBrevoSmtp && !resendToken && !useQqSmtp && !allInternal) {
@@ -553,7 +553,7 @@ const emailService = {
 
 		// sendParams 用于渠道请求，saveParams 保留保存记录所需的账号、权限和附件数据。
 		const context = {
-			separate, allInternal, useCloudflareEmail, resendToken, sendParams,
+			separate, allInternal, useCloudflareEmail, resendToken, smtpChannels, sendChain, sendParams,
 			saveParams: {
 				accountId, userId, name, subject, text, html,
 				sendEmail: accountRow.email,
@@ -564,8 +564,8 @@ const emailService = {
 			}
 		};
 
-		// 全部站内收件人走本地投递；存在站外收件人时按渠道降级链发送：
-		// CF 绑定 -> Brevo SMTP -> Resend -> QQ SMTP
+		// 全部站内收件人走本地投递；存在站外收件人时按系统设置 sendChain 的
+		// 渠道顺序（默认 CF 绑定 -> Brevo SMTP -> Resend -> QQ SMTP）降级发送
 		let deliveries;
 		if (allInternal) {
 			deliveries = this.sendInternal(c, context);
@@ -616,32 +616,29 @@ const emailService = {
 		}
 	},
 
-	// 构建外发渠道降级链：CF 绑定优先且不计配额，其后 Brevo SMTP、Resend、QQ SMTP 按序降级。
-	buildChannelChain(c, { resendToken }) {
-		const channels = [];
-
-		if (c.env.email) {
-			channels.push({
-				name: 'cloudflare',
+	// 构建外发渠道降级链：顺序由系统设置 sendChain 决定（默认 cf -> brevo -> resend -> qq），
+	// 只保留当前可用的渠道；CF 绑定不计配额，其余渠道按每日配额降级。
+	buildChannelChain(c, { resendToken, smtpChannels, sendChain }) {
+		const builders = {
+			cf: () => c.env.email ? {
+				name: 'cf',
 				limit: null,
 				send: params => this.sendByCloudflareEmail(c, params)
-			});
-		}
+			} : null,
 
-		const brevoConfig = smtpSendService.getSmtpConfig(c, 'brevo');
-		if (brevoConfig) {
-			channels.push({
-				name: 'brevo',
-				limit: smtpSendService.getDailyLimit(c, 'brevo'),
-				// Brevo 的 From 用发件账号地址（发件域名已在 Brevo 验证）
-				send: params => smtpSendService.sendBySmtp(brevoConfig, params, params.accountEmail)
-			});
-		}
+			brevo: () => {
+				const brevoConfig = smtpSendService.getSmtpConfig(c, 'brevo', smtpChannels);
+				return brevoConfig ? {
+					name: 'brevo',
+					limit: smtpSendService.getDailyLimit(c, 'brevo', smtpChannels),
+					// Brevo 的 From 用发件账号地址（发件域名已在 Brevo 验证）
+					send: params => smtpSendService.sendBySmtp(brevoConfig, params, params.accountEmail)
+				} : null;
+			},
 
-		if (resendToken) {
-			channels.push({
+			resend: () => resendToken ? {
 				name: 'resend',
-				limit: smtpSendService.getDailyLimit(c, 'resend'),
+				limit: smtpSendService.getDailyLimit(c, 'resend', smtpChannels),
 				send: async params => {
 					const result = await this.sendByResend(resendToken, params);
 					// Resend 用 error 字段返回失败，统一转成异常走配额降级逻辑
@@ -650,27 +647,38 @@ const emailService = {
 					}
 					return result;
 				}
-			});
-		}
+			} : null,
 
-		const qqConfig = smtpSendService.getSmtpConfig(c, 'qq');
-		if (qqConfig) {
-			channels.push({
-				name: 'qq',
-				limit: smtpSendService.getDailyLimit(c, 'qq'),
-				// QQ SMTP 的 From 必须是 QQ 账号本身的地址，不能伪装发件域名，sender name 保留
-				send: params => smtpSendService.sendBySmtp(qqConfig, params, qqConfig.credentials.username)
-			});
-		}
+			qq: () => {
+				const qqConfig = smtpSendService.getSmtpConfig(c, 'qq', smtpChannels);
+				return qqConfig ? {
+					name: 'qq',
+					limit: smtpSendService.getDailyLimit(c, 'qq', smtpChannels),
+					// QQ SMTP 的 From 必须是 QQ 账号本身的地址，不能伪装发件域名，sender name 保留
+					send: params => smtpSendService.sendBySmtp(qqConfig, params, qqConfig.credentials.username)
+				} : null;
+			}
+		};
 
+		const order = Array.isArray(sendChain) && sendChain.length > 0
+			? sendChain
+			: ['cf', 'brevo', 'resend', 'qq'];
+
+		const channels = [];
+		for (const name of order) {
+			const channel = builders[name]?.();
+			if (channel) {
+				channels.push(channel);
+			}
+		}
 		return channels;
 	},
 
 	// 外发降级链：普通发送一次提交所有收件人，分开发送逐人发送。
 	// 每个渠道发送前检查当日配额余量，不足则跳过；配额/频率限制类错误会把该渠道
 	// 当日计数设为上限并降级到下一渠道，分开发送配额中途用完时剩余收件人自动切渠道继续。
-	async *sendExternal(c, { separate, resendToken, sendParams, saveParams }) {
-		const channels = this.buildChannelChain(c, { resendToken });
+	async *sendExternal(c, { separate, resendToken, smtpChannels, sendChain, sendParams, saveParams }) {
+		const channels = this.buildChannelChain(c, { resendToken, smtpChannels, sendChain });
 		const copyCount = sendParams.ccEmail.length + sendParams.bccEmail.length;
 		const pendingGroups = separate
 			? sendParams.receiveEmail.map(address => [address])
