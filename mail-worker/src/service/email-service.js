@@ -797,10 +797,12 @@ const emailService = {
 
 	async sendByCloudflareEmail(c, params) {
 		const sendForm = {
-			from: { email: params.accountEmail, name: params.name },
+			from: { email: "admin@example.com", name: params.name },
 			to: [...params.receiveEmail],
-			subject: params.subject
+			subject: params.subject,
+			replyTo: params.accountEmail
 		};
+
 
 		if (params.ccEmail.length > 0) {
 			sendForm.cc = [...params.ccEmail];
@@ -843,13 +845,15 @@ const emailService = {
 		const resend = new Resend(resendToken);
 
 		const sendForm = {
-			from: `${params.name} <${params.accountEmail}>`,
+			from: `${params.name} <admin@example.com>`,
+			reply_to: params.accountEmail,
 			to: [...params.receiveEmail],
 			subject: params.subject,
 			text: params.text,
 			html: params.html,
 			attachments: await this.toResendAttachments(params.attachments)
 		};
+
 
 		if (params.ccEmail.length > 0) {
 			sendForm.cc = [...params.ccEmail];
