@@ -26,3 +26,6 @@ mail-vue/dist
 .wrangler
 .venv
 git-tools.js
+
+# 本地部署配置（含敏感信息，禁止提交）
+mail-worker/wrangler.local.toml

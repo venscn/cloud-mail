@@ -25,6 +25,7 @@ const en = {
 	senderAccountNotExist: 'Sender email does not exist',
 	noResendToken: 'Resend API token not configured',
 	noSendProvider: 'Email sending service is not configured',
+	sendQuotaExhausted: 'All sending channels have reached their daily quota, please try again tomorrow',
 	sendEmailNotCurUser: 'Sender email does not belong to current user',
 	notExistEmailReply: 'Mail does not exist and cannot be replied to',
 	imageAttLimit: 'The maximum number of image attachments is 10',

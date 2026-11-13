@@ -26,6 +26,7 @@ import telegramService from './telegram-service';
 import webhookService from './webhook-service';
 import forwardMime from '../utils/forward-mime';
 import verifyUtils from '../utils/verify-utils';
+import smtpSendService from './smtp-send-service';
 
 const emailService = {
 
@@ -494,9 +495,11 @@ const emailService = {
 		const domain = emailUtils.getDomain(accountRow.email);
 		const resendToken = resendTokens[domain];
 		const useCloudflareEmail = !!c.env.email;
+		const useBrevoSmtp = !!smtpSendService.getSmtpConfig(c, 'brevo');
+		const useQqSmtp = !!smtpSendService.getSmtpConfig(c, 'qq');
 
 		//如果接收方存在站外邮箱，又没有发信服务
-		if (!useCloudflareEmail && !resendToken && !allInternal) {
+		if (!useCloudflareEmail && !useBrevoSmtp && !resendToken && !useQqSmtp && !allInternal) {
 			throw new BizError(t('noSendProvider'));
 		}
 
@@ -561,14 +564,13 @@ const emailService = {
 			}
 		};
 
-		// 全部站内收件人走本地投递；存在站外收件人时优先 CF，其次 Resend。
+		// 全部站内收件人走本地投递；存在站外收件人时按渠道降级链发送：
+		// CF 绑定 -> Brevo SMTP -> Resend -> QQ SMTP
 		let deliveries;
 		if (allInternal) {
 			deliveries = this.sendInternal(c, context);
-		} else if (useCloudflareEmail) {
-			deliveries = this.sendCloudflare(c, context);
 		} else {
-			deliveries = this.sendResend(c, context);
+			deliveries = this.sendExternal(c, context);
 		}
 
 		const emailResults = [];
@@ -614,64 +616,117 @@ const emailService = {
 		}
 	},
 
-	// CF 发送：普通发送一次提交所有收件人，分开发送逐人调用并保存结果。
-	async *sendCloudflare(c, { separate, sendParams, saveParams }) {
-		const recipientGroups = separate
-			? sendParams.receiveEmail.map(address => [address])
-			: [sendParams.receiveEmail];
-		for (const receiveEmail of recipientGroups) {
-			let result;
-			try {
-				result = await this.sendByCloudflareEmail(c, { ...sendParams, receiveEmail });
-			} catch (error) {
-				if (!separate) throw error;
-				// 分开发送遇到渠道错误即停止，已成功的记录由入口汇总。
-				yield { error: { message: error.message } };
-				return;
-			}
-			const emailResult = await this.saveSentEmail(c, {
-				...saveParams, receiveEmail, providerId: result.data.id
+	// 构建外发渠道降级链：CF 绑定优先且不计配额，其后 Brevo SMTP、Resend、QQ SMTP 按序降级。
+	buildChannelChain(c, { resendToken }) {
+		const channels = [];
+
+		if (c.env.email) {
+			channels.push({
+				name: 'cloudflare',
+				limit: null,
+				send: params => this.sendByCloudflareEmail(c, params)
 			});
-			yield { emails: [emailResult] };
 		}
+
+		const brevoConfig = smtpSendService.getSmtpConfig(c, 'brevo');
+		if (brevoConfig) {
+			channels.push({
+				name: 'brevo',
+				limit: smtpSendService.getDailyLimit(c, 'brevo'),
+				// Brevo 的 From 用发件账号地址（发件域名已在 Brevo 验证）
+				send: params => smtpSendService.sendBySmtp(brevoConfig, params, params.accountEmail)
+			});
+		}
+
+		if (resendToken) {
+			channels.push({
+				name: 'resend',
+				limit: smtpSendService.getDailyLimit(c, 'resend'),
+				send: async params => {
+					const result = await this.sendByResend(resendToken, params);
+					// Resend 用 error 字段返回失败，统一转成异常走配额降级逻辑
+					if (result?.error) {
+						throw new BizError(result.error.message);
+					}
+					return result;
+				}
+			});
+		}
+
+		const qqConfig = smtpSendService.getSmtpConfig(c, 'qq');
+		if (qqConfig) {
+			channels.push({
+				name: 'qq',
+				limit: smtpSendService.getDailyLimit(c, 'qq'),
+				// QQ SMTP 的 From 必须是 QQ 账号本身的地址，不能伪装发件域名，sender name 保留
+				send: params => smtpSendService.sendBySmtp(qqConfig, params, qqConfig.credentials.username)
+			});
+		}
+
+		return channels;
 	},
 
-	// Resend 分开发送一次最多提交 100 封独立邮件，普通发送仍调用单封接口。
-	async *sendResend(c, { separate, resendToken, sendParams, saveParams }) {
-		if (separate && sendParams.receiveEmail.length > 100) {
-			throw new BizError(t('resendRecipientLimit'));
+	// 外发降级链：普通发送一次提交所有收件人，分开发送逐人发送。
+	// 每个渠道发送前检查当日配额余量，不足则跳过；配额/频率限制类错误会把该渠道
+	// 当日计数设为上限并降级到下一渠道，分开发送配额中途用完时剩余收件人自动切渠道继续。
+	async *sendExternal(c, { separate, resendToken, sendParams, saveParams }) {
+		const channels = this.buildChannelChain(c, { resendToken });
+		const copyCount = sendParams.ccEmail.length + sendParams.bccEmail.length;
+		const pendingGroups = separate
+			? sendParams.receiveEmail.map(address => [address])
+			: [sendParams.receiveEmail];
+
+		for (const channel of channels) {
+			while (pendingGroups.length > 0) {
+				const receiveEmail = pendingGroups[0];
+				// 配额按收件人数计，to+cc+bcc 都算
+				const quotaCount = receiveEmail.length + copyCount;
+
+				// 发送前检查配额余量，不足则跳过该渠道
+				if (channel.limit !== null) {
+					const remaining = await smtpSendService.getQuotaRemaining(c, channel.name, channel.limit);
+					if (remaining < quotaCount) {
+						break;
+					}
+				}
+
+				let result;
+				try {
+					result = await channel.send({ ...sendParams, receiveEmail });
+				} catch (error) {
+					// 配额/频率限制类错误：把该渠道当日计数设为上限，降级到下一渠道
+					if (channel.limit !== null && smtpSendService.isQuotaError(error)) {
+						await smtpSendService.markQuotaExhausted(c, channel.name, channel.limit);
+						break;
+					}
+					// 其他错误保持原语义：普通发送直接抛出，分开发送停止并汇总已完成部分。
+					if (!separate) throw error;
+					yield { error: { message: error.message } };
+					return;
+				}
+
+				// 发送成功后按实际收件人数递增配额计数
+				if (channel.limit !== null) {
+					await smtpSendService.incrQuota(c, channel.name, quotaCount);
+				}
+
+				const emailResult = await this.saveSentEmail(c, {
+					...saveParams, receiveEmail, providerId: result?.data?.id ?? null
+				});
+				pendingGroups.shift();
+				yield { emails: [emailResult] };
+			}
+
+			if (pendingGroups.length === 0) {
+				return;
+			}
 		}
-		// 批量接口不支持附件，包含正文转换得到的内嵌附件。
-		if (separate && sendParams.attachments.length > 0) {
-			throw new BizError(t('resendSeparateAttachments'));
+
+		// 所有渠道今日配额都已用完
+		if (!separate) {
+			throw new BizError(t('sendQuotaExhausted'));
 		}
-		let result;
-		try {
-			result = separate
-				? await this.sendBatchByResend(resendToken, sendParams)
-				: await this.sendByResend(resendToken, sendParams);
-		} catch (error) {
-			if (!separate) throw error;
-			yield { error: { message: error.message } };
-			return;
-		}
-		if (result.error) {
-			yield { error: result.error };
-			return;
-		}
-		// 严格校验模式下，批量返回的邮件 ID 按提交顺序对应各收件人。
-		const items = separate
-			? sendParams.receiveEmail.map((address, index) => ({
-				receiveEmail: [address], id: result.data.data[index].id
-			}))
-			: [{ receiveEmail: sendParams.receiveEmail, id: result.data?.id }];
-		const emails = [];
-		for (const item of items) {
-			emails.push(await this.saveSentEmail(c, {
-				...saveParams, receiveEmail: item.receiveEmail, providerId: item.id
-			}));
-		}
-		yield { emails };
+		yield { error: { message: t('sendQuotaExhausted') } };
 	},
 
 	// 三个渠道共用的发件记录保存：恢复正文图片 URL、保存附件并更新发送计数。
@@ -729,29 +784,6 @@ const emailService = {
 		}
 
 		return emailResult;
-	},
-
-	// 附件已在 Resend 处理器中校验，批量接口为每位收件人构造独立邮件。
-	async sendBatchByResend(resendToken, params) {
-		const resend = new Resend(resendToken);
-		const sendForm = {
-			from: `${params.name} <${params.accountEmail}>`,
-			subject: params.subject,
-			text: params.text,
-			html: params.html
-		};
-		if (params.sendType === 'reply' && params.messageId) {
-			sendForm.headers = {
-				'in-reply-to': params.messageId,
-				'references': params.messageId
-			};
-		}
-		return resend.batch.send(params.receiveEmail.map(address => ({
-			...sendForm,
-			to: [address],
-			...(params.ccEmail.length > 0 ? { cc: params.ccEmail } : {}),
-			...(params.bccEmail.length > 0 ? { bcc: params.bccEmail } : {})
-		})), { batchValidation: 'strict' });
 	},
 
 	async sendByCloudflareEmail(c, params) {

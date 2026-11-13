@@ -3,6 +3,11 @@ main = "src/index.js"
 compatibility_date = "2025-06-04"
 keep_vars = true
 
+# 自定义域名路由（含隐私信息，建议在本地 wrangler.local.toml 中配置）
+#routes = [
+#	{ pattern = "mail.example.com", custom_domain = true }
+#]
+
 [observability]
 enabled = true
 
@@ -45,6 +50,25 @@ crons = ["0 * * * *"]	#每小时执行；resetDaySendCount 仅在 UTC 0 点生�
 #domain = []				#邮件域名可可配置多个 示例: ["example1.com","example2.com"]
 #admin = ""					#管理员的邮箱	示例: admin@example.com
 #jwt_secret = ""			#jwt令牌的密钥,随便填一串字符串
+
+# ===== 多渠道发件降级链（本 fork 新增功能）=====
+# 渠道优先级: CF email绑定 -> Brevo SMTP -> Resend -> QQ SMTP
+# 每个渠道有独立的每日配额，用量耗尽后自动降级到下一渠道
+# 密码类配置请用 wrangler secret put 设置，不要写在这里：
+#   wrangler secret put brevo_smtp_pass
+#   wrangler secret put qq_smtp_pass
+#
+#brevo_smtp_user = ""			#Brevo SMTP 登录名（Brevo 后台 SMTP&API 页面获取）
+#brevo_smtp_host = ""			#默认 smtp-relay.brevo.com，一般不填
+#brevo_smtp_port = 587			#默认 587 (STARTTLS)
+#brevo_daily_limit = 300			#Brevo 免费版每日 300 封
+#
+#resend_daily_limit = 100			#Resend 免费版每日 100 封；resendTokens 在系统设置页配置
+#
+#qq_smtp_user = ""				#QQ 邮箱地址（兜底渠道，发件人显示为此邮箱）
+#qq_smtp_host = ""				#默认 smtp.qq.com，一般不填
+#qq_smtp_port = 465				#默认 465 (SSL)
+#qq_daily_limit = 100			#QQ 邮箱每日配额（保守值）
 
 [build]
 command = "pnpm --prefix ../mail-vue install && pnpm --prefix ../mail-vue run build"
