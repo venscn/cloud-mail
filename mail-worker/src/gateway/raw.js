@@ -1,7 +1,7 @@
 import PostalMime from 'postal-mime';
 import { fail, notFound } from './errors.js';
 import { ensureGatewaySchema } from './auth.js';
-import { MAX_MESSAGE_BYTES, MAX_RAW_MESSAGE_BYTES, readBounded, sha256 } from './validation.js';
+import { MAX_RAW_MESSAGE_BYTES, readBounded, sha256 } from './validation.js';
 
 export const PRIVATE_PREFIX = 'private-gateway/';
 const encoder = new TextEncoder();
@@ -128,7 +128,7 @@ async function reconstructLegacyBytes(c, email, objectReader) {
 		`Message-ID: ${/^<[^<>\s]+>$/.test(email.message_id || '') ? email.message_id : `<reconstructed-${seed}@gateway.invalid>`}`,
 		...(email.in_reply_to && /^<[^<>\s]+>$/.test(email.in_reply_to) ? [`In-Reply-To: ${email.in_reply_to}`] : []),
 		...(email.relation ? [`References: ${clean(email.relation)}`] : []),
-		'MIME-Version: 1.0', 'X-CMG-Reconstructed: yes',
+		'MIME-Version: 1.0', 'X-CMG-Reconstructed: yes', 'X-CMG-Reconstruction-Version: 1',
 		`Content-Type: multipart/${parts.length ? 'mixed' : 'alternative'}; boundary="${parts.length ? mixed : alternative}"`
 	];
 	const content = parts.length ? [`--${mixed}`, `Content-Type: multipart/alternative; boundary="${alternative}"`, '', body, ...parts.flatMap(value => [`--${mixed}`, value]), `--${mixed}--`, ''].join('\r\n') : body;
