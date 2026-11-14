@@ -10,14 +10,17 @@ export function normalizeGatewayHostname(value) {
 }
 
 export function gatewayDisplayConfig(settings) {
-    const hostname = normalizeGatewayHostname(settings?.gatewayHostname)
-    const enabled = settings?.gatewayEnabled === 1 && !!hostname
-    return {enabled, hostname: enabled ? hostname : ''}
+    // Only the independently configured endpoints are accepted; no shared-host fallback.
+    const imapHostname = normalizeGatewayHostname(settings?.gatewayImapHostname)
+    const smtpHostname = normalizeGatewayHostname(settings?.gatewaySmtpHostname)
+    const enabled = settings?.gatewayEnabled === 1 && !!imapHostname && !!smtpHostname
+    return {enabled, imapHostname: enabled ? imapHostname : '', smtpHostname: enabled ? smtpHostname : ''}
 }
 
-export function gatewaySettingsPatch(enabled, hostname) {
+export function gatewaySettingsPatch(enabled, imapHostname, smtpHostname) {
     if (enabled !== 0 && enabled !== 1) return null
-    const normalized = normalizeGatewayHostname(hostname)
-    if (normalized === null || (enabled === 1 && !normalized)) return null
-    return {gatewayEnabled: enabled, gatewayHostname: normalized}
+    const imap = normalizeGatewayHostname(imapHostname)
+    const smtp = normalizeGatewayHostname(smtpHostname)
+    if (imap === null || smtp === null || (enabled === 1 && (!imap || !smtp))) return null
+    return {gatewayEnabled: enabled, gatewayImapHostname: imap, gatewaySmtpHostname: smtp}
 }

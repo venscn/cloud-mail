@@ -3,31 +3,43 @@ import {gatewaySettingsPatch} from '../gateway-settings/gateway-config.js'
 
 export function useGatewayAdminSettings(settings, update) {
     const enabled = ref(0)
-    const hostname = ref('')
+    const imapHostname = ref('')
+    const smtpHostname = ref('')
     const saving = ref(false)
     const errorKey = ref('')
-    const stop = watch(() => [settings.value?.gatewayEnabled, settings.value?.gatewayHostname], ([value, host]) => {
-        if (!saving.value) {
-            enabled.value = value === 1 ? 1 : 0
-            hostname.value = typeof host === 'string' ? host : ''
-        }
+    let baseline = {}
+    function syncDraft() {
+        const current = settings.value
+        const imap = current?.gatewayImapHostname
+        const smtp = current?.gatewaySmtpHostname
+        enabled.value = current?.gatewayEnabled === 1 ? 1 : 0
+        imapHostname.value = typeof imap === 'string' ? imap : ''
+        smtpHostname.value = typeof smtp === 'string' ? smtp : ''
+        baseline = {gatewayEnabled: enabled.value, gatewayImapHostname: imapHostname.value, gatewaySmtpHostname: smtpHostname.value}
+    }
+    const stop = watch(() => [settings.value?.gatewayEnabled,
+        settings.value?.gatewayImapHostname, settings.value?.gatewaySmtpHostname], () => {
+        if (!saving.value) syncDraft()
     }, {immediate: true})
 
     async function save() {
         if (saving.value) return false
         errorKey.value = ''
-        const patch = gatewaySettingsPatch(enabled.value, hostname.value)
-        if (!patch) {
+        const normalized = gatewaySettingsPatch(enabled.value, imapHostname.value, smtpHostname.value)
+        if (!normalized) {
             errorKey.value = 'gatewayAdminInvalidHostname'
             return false
         }
+        // Only dirty hostnames; never resend the other endpoint or masked secrets.
+        const changes = Object.fromEntries(Object.entries(normalized).filter(([key, value]) => value !== baseline[key]))
+        if (!Object.keys(changes).length) return true
+        // Explicitly preserve the displayed switch when the server normalized an incomplete old config to off.
+        const patch = {gatewayEnabled: normalized.gatewayEnabled, ...changes}
         saving.value = true
         try {
-            // Send only these public settings; never resend masked admin secrets.
             await update(patch)
             Object.assign(settings.value, patch)
-            enabled.value = patch.gatewayEnabled
-            hostname.value = patch.gatewayHostname
+            syncDraft()
             return true
         } catch {
             // Do not retain an Axios response/config, which may contain secrets.
@@ -37,5 +49,5 @@ export function useGatewayAdminSettings(settings, update) {
             saving.value = false
         }
     }
-    return {enabled, hostname, saving, errorKey, save, dispose: stop}
+    return {enabled, imapHostname, smtpHostname, saving, errorKey, save, dispose: stop}
 }

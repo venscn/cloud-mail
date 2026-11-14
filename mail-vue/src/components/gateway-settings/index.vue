@@ -7,7 +7,8 @@
       </el-button>
     </div>
     <p class="help-text">{{ $t('gatewayIntro') }}</p>
-    <p class="help-text">{{ $t('gatewayServer') }}：<code data-testid="gateway-hostname">{{ gatewayHostname }}</code></p>
+    <p class="help-text">{{ $t('gatewayImapServer') }}：<code data-testid="gateway-imap-hostname">{{ gatewayConfig.imapHostname }}</code></p>
+    <p class="help-text">{{ $t('gatewaySmtpServer') }}：<code data-testid="gateway-smtp-hostname">{{ gatewayConfig.smtpHostname }}</code></p>
     <el-alert v-if="errorKey" :title="$t(errorKey)" type="warning" show-icon :closable="false" role="status" />
 
     <template v-if="ready">
@@ -77,7 +78,8 @@
     <el-collapse class="client-help">
       <el-collapse-item :title="$t('gatewayClientSetup')" name="client-setup">
         <dl class="client-settings">
-          <dt>{{ $t('gatewayServer') }}</dt><dd><code>{{ gatewayHostname }}</code></dd>
+          <dt>{{ $t('gatewayImapServer') }}</dt><dd><code>{{ gatewayConfig.imapHostname }}</code></dd>
+          <dt>{{ $t('gatewaySmtpServer') }}</dt><dd><code>{{ gatewayConfig.smtpHostname }}</code></dd>
           <dt>{{ $t('gatewayLoginName') }}</dt><dd>{{ selectedAccount?.email || $t('gatewaySelectedMailboxHint') }}</dd>
           <dt>{{ $t('password') }}</dt><dd>{{ $t('gatewayPasswordHint') }}</dd>
           <dt>IMAP</dt><dd>{{ $t('gatewayImapSettings') }}</dd>
@@ -85,7 +87,7 @@
         </dl>
         <ol class="help-list">
           <li>{{ $t('gatewayIosStep1') }}</li>
-          <li>{{ $t('gatewayIosStep2', {hostname: gatewayHostname}) }}</li>
+          <li>{{ $t('gatewayIosStep2', {imapHostname: gatewayConfig.imapHostname, smtpHostname: gatewayConfig.smtpHostname}) }}</li>
           <li>{{ $t('gatewayIosStep3') }}</li>
         </ol>
         <p class="help-text">{{ $t('gatewayNoMxChange') }}</p>
@@ -165,7 +167,7 @@ import {gatewayDisplayConfig} from './gateway-config.js'
 
 const {t, locale} = useI18n()
 const settingStore = useSettingStore()
-const gatewayHostname = computed(() => gatewayDisplayConfig(settingStore.settings).hostname)
+const gatewayConfig = computed(() => gatewayDisplayConfig(settingStore.settings))
 const canSend = computed(() => hasPerm('email:send') && settingStore.settings.send === 0)
 const state = useGatewaySettings(gatewayApi)
 const {

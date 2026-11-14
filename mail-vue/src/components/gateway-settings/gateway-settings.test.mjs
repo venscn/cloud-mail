@@ -260,7 +260,8 @@ test('component compiles, has localized safe client guidance and no persistence/
     assert.match(source, /@close="clearSecret"/)
     assert.match(source, /gatewayUnknownWarning/)
     assert.doesNotMatch(source, /gatewayDeploymentRequired|gatewayServerHint/)
-    assert.match(source, /data-testid="gateway-hostname"/)
+    assert.match(source, /data-testid="gateway-imap-hostname"/)
+    assert.match(source, /data-testid="gateway-smtp-hostname"/)
     assert.match(source, /gatewayDisplayConfig\(settingStore\.settings\)/)
     assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort())
     for (const key of (source + controller).matchAll(/['"](gateway[A-Z_a-z]+)['"]/g)) {

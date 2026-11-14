@@ -7,11 +7,15 @@
           <el-switch v-model="enabled" :active-value="1" :inactive-value="0"
                      :disabled="disabled || saving" :aria-label="$t('gatewayAdminEnabled')" />
         </el-form-item>
-        <el-form-item :label="$t('gatewayServer')">
-          <el-input v-model="hostname" :maxlength="253" :disabled="disabled || saving"
-                    :placeholder="$t('gatewayAdminHostnamePlaceholder')" autocomplete="off" />
-          <p class="help-text">{{ $t('gatewayAdminHostnameHint') }}</p>
+        <el-form-item :label="$t('gatewayImapServer')">
+          <el-input v-model="imapHostname" :maxlength="253" :disabled="disabled || saving"
+                    :placeholder="$t('gatewayAdminImapHostnamePlaceholder')" autocomplete="off" />
         </el-form-item>
+        <el-form-item :label="$t('gatewaySmtpServer')">
+          <el-input v-model="smtpHostname" :maxlength="253" :disabled="disabled || saving"
+                    :placeholder="$t('gatewayAdminSmtpHostnamePlaceholder')" autocomplete="off" />
+        </el-form-item>
+        <p class="help-text">{{ $t('gatewayAdminHostnameHint') }}</p>
         <el-alert v-if="errorKey" :title="$t(errorKey)" type="error" show-icon :closable="false" />
         <p class="help-text">{{ $t('gatewayAdminVisibilityHint') }}</p>
         <p class="help-text">{{ $t('gatewayDeploymentRequired') }}</p>
@@ -36,7 +40,7 @@ const emit = defineEmits(['saving'])
 const {t} = useI18n()
 const settingStore = useSettingStore()
 const state = useGatewayAdminSettings(computed(() => settingStore.settings), settingSet)
-const {enabled, hostname, saving, errorKey} = state
+const {enabled, imapHostname, smtpHostname, saving, errorKey} = state
 
 async function saveSettings() {
   if (props.disabled || saving.value) return
