@@ -1,0 +1,2 @@
+# The offline migration mirror is byte-compared on every platform.
+mail-worker/migrations/*.sql text eol=lf
