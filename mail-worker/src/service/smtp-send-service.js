@@ -143,7 +143,7 @@ const smtpSendService = {
 			const displayName = encodeHeader(name).replace(/["\\]/g, '\\$&');
 			sendForm.headers.From = name ? `"${displayName}" <${visibleFromEmail}>` : visibleFromEmail;
 		}
-		if (fromEmail !== params.accountEmail) {
+		if (visibleFromEmail.toLowerCase() !== params.accountEmail.toLowerCase()) {
 			sendForm.reply = { email: params.accountEmail, name };
 		}
 
@@ -169,7 +169,25 @@ const smtpSendService = {
 			sendForm.attachments = attachments;
 		}
 
-		if (params.sendType === 'reply' && params.messageId) {
+		if (params.gateway) {
+			if ((params.attachments || []).some(attachment => attachment.contentId)) {
+				// The public worker-mailer API cannot represent an inline CID.
+				// Gateway MIME must be rejected rather than silently corrupted.
+				throw new Error('The selected SMTP channel cannot preserve inline MIME attachments');
+			}
+			sendForm.headers = { ...sendForm.headers, ...params.gateway.headers };
+			// worker-mailer uses case-sensitive property checks for standard
+			// headers. Use its spelling to avoid a second generated Cc header.
+			sendForm.headers.CC = sendForm.headers.Cc;
+			delete sendForm.headers.Cc;
+			const displayName = encodeHeader(name).replace(/["\\]/g, '\\$&');
+			sendForm.headers.From = name ? `"${displayName}" <${visibleFromEmail}>` : visibleFromEmail;
+			if (visibleFromEmail.toLowerCase() !== params.accountEmail.toLowerCase()) {
+				// QQ delegation is intentional: replies always reach the real Mail
+				// account, even if the submitted MIME requested another Reply-To.
+				sendForm.headers['Reply-To'] = params.accountEmail;
+			}
+		} else if (params.sendType === 'reply' && params.messageId) {
 			sendForm.headers = {
 				...sendForm.headers,
 				'in-reply-to': params.messageId,

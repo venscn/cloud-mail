@@ -104,6 +104,13 @@ describe('SendPulse sender identity', () => {
 		expect(parsed.from.address).toBe(accountEmail);
 	});
 
+	it('preserves MIME Reply-To when SendPulse uses a different same-domain envelope sender', async () => {
+		await smtpSendService.sendBySendPulse(smtpConfig(), message({ gateway: { headers: { 'Reply-To': 'support@example.test' } } }));
+		const { parsed } = await parseForm(sentForm());
+		expect(parsed.from).toMatchObject({ address: 'alice@example.com', name: 'alice' });
+		expect(parsed.replyTo[0].address).toBe('support@example.test');
+	});
+
 	it('compares envelope and visible domains case-insensitively', async () => {
 		await smtpSendService.sendBySendPulse(smtpConfig({ envelopeFrom: 'admin@example.com' }), message());
 		expect(sentForm().from.email).toBe('admin@example.com');
