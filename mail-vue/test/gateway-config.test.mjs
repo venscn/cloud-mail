@@ -90,7 +90,7 @@ test('production personal-settings v-if does not mount management when disabled 
 test('production client markup renders separate incoming and outgoing hostnames and localized iOS instructions', async () => {
     const {descriptor} = parse(client)
     const rows = ['gateway-imap-hostname', 'gateway-smtp-hostname'].map(id => find(descriptor.template.ast,
-        node => node.tag === 'p' && node.loc.source.includes(`data-testid="${id}"`)))
+        node => node.tag === 'dd' && node.loc.source.includes(`data-testid="${id}"`)))
     const ios = find(descriptor.template.ast, node => node.tag === 'li' && node.loc.source.includes('gatewayIosStep2'))
     assert.ok(rows.every(Boolean) && ios)
     const render = renderTemplate(`<div>${rows.map(row => row.loc.source).join('')}${ios.loc.source}</div>`)
@@ -100,7 +100,9 @@ test('production client markup renders separate incoming and outgoing hostnames 
         const html = await renderToString(app)
         assert.match(html, /gateway-imap-hostname">imap\.example\.invalid<\/code>/)
         assert.match(html, /gateway-smtp-hostname">smtp\.example\.invalid<\/code>/)
-        assert.ok(html.includes(labels.gatewayImapServer) && html.includes(labels.gatewaySmtpServer))
+        assert.equal((html.match(/imap\.example\.invalid/g) || []).length, 1)
+        assert.equal((html.match(/smtp\.example\.invalid/g) || []).length, 1)
+        assert.ok(html.includes(labels.gatewayIosStep2))
         assert.doesNotMatch(html, /undefined|\{(?:imap|smtp)?[Hh]ostname\}/)
     }
     assert.doesNotMatch(client, /gatewayDeploymentRequired|gatewayServerHint|window\.location|gatewayConfig\.hostname/)

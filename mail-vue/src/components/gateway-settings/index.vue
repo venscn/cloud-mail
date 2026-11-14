@@ -7,8 +7,6 @@
       </el-button>
     </div>
     <p class="help-text">{{ $t('gatewayIntro') }}</p>
-    <p class="help-text">{{ $t('gatewayImapServer') }}：<code data-testid="gateway-imap-hostname">{{ gatewayConfig.imapHostname }}</code></p>
-    <p class="help-text">{{ $t('gatewaySmtpServer') }}：<code data-testid="gateway-smtp-hostname">{{ gatewayConfig.smtpHostname }}</code></p>
     <el-alert v-if="errorKey" :title="$t(errorKey)" type="warning" show-icon :closable="false" role="status" />
 
     <template v-if="ready">
@@ -78,8 +76,8 @@
     <el-collapse class="client-help">
       <el-collapse-item :title="$t('gatewayClientSetup')" name="client-setup">
         <dl class="client-settings">
-          <dt>{{ $t('gatewayImapServer') }}</dt><dd><code>{{ gatewayConfig.imapHostname }}</code></dd>
-          <dt>{{ $t('gatewaySmtpServer') }}</dt><dd><code>{{ gatewayConfig.smtpHostname }}</code></dd>
+          <dt>{{ $t('gatewayImapServer') }}</dt><dd><code data-testid="gateway-imap-hostname">{{ gatewayConfig.imapHostname }}</code></dd>
+          <dt>{{ $t('gatewaySmtpServer') }}</dt><dd><code data-testid="gateway-smtp-hostname">{{ gatewayConfig.smtpHostname }}</code></dd>
           <dt>{{ $t('gatewayLoginName') }}</dt><dd>{{ selectedAccount?.email || $t('gatewaySelectedMailboxHint') }}</dd>
           <dt>{{ $t('password') }}</dt><dd>{{ $t('gatewayPasswordHint') }}</dd>
           <dt>IMAP</dt><dd>{{ $t('gatewayImapSettings') }}</dd>
@@ -87,10 +85,9 @@
         </dl>
         <ol class="help-list">
           <li>{{ $t('gatewayIosStep1') }}</li>
-          <li>{{ $t('gatewayIosStep2', {imapHostname: gatewayConfig.imapHostname, smtpHostname: gatewayConfig.smtpHostname}) }}</li>
+          <li>{{ $t('gatewayIosStep2') }}</li>
           <li>{{ $t('gatewayIosStep3') }}</li>
         </ol>
-        <p class="help-text">{{ $t('gatewayNoMxChange') }}</p>
       </el-collapse-item>
     </el-collapse>
 

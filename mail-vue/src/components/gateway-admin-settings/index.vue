@@ -1,5 +1,5 @@
 <template>
-  <section class="gateway-admin" aria-labelledby="gateway-admin-title">
+  <section v-if="canManageSettings" class="gateway-admin" aria-labelledby="gateway-admin-title">
     <div class="card-title" id="gateway-admin-title">{{ $t('gatewayTitle') }}</div>
     <div class="card-content">
       <el-form label-position="top" @submit.prevent="saveSettings">
@@ -35,6 +35,8 @@
         <el-alert v-if="errorKey" :title="$t(errorKey)" type="error" show-icon :closable="false" />
         <p class="help-text">{{ $t('gatewayAdminVisibilityHint') }}</p>
         <p class="help-text">{{ $t('gatewayDeploymentRequired') }}</p>
+        <p class="help-text">{{ $t('gatewayNoMxChange') }}</p>
+        <p class="help-text">{{ $t('gatewayAdminSmtpAlternative') }}</p>
         <p class="help-text">{{ $t('gatewayProbeHint') }}</p>
         <el-button type="primary" native-type="submit" :loading="saving" :disabled="disabled || saving">
           {{ $t('save') }}
@@ -49,6 +51,8 @@ import {computed, onBeforeUnmount} from 'vue'
 import {useI18n} from 'vue-i18n'
 import {ElMessage} from 'element-plus'
 import {useSettingStore} from '@/store/setting.js'
+import {useUserStore} from '@/store/user.js'
+import {canManageGatewaySettings} from './gateway-admin-access.js'
 import {settingSet, gatewayConnectivity} from '@/request/setting.js'
 import {useGatewayConnectivity} from './use-gateway-connectivity.js'
 import {useGatewayAdminSettings} from './use-gateway-admin-settings.js'
@@ -57,6 +61,8 @@ const props = defineProps({disabled: {type: Boolean, default: false}})
 const emit = defineEmits(['saving'])
 const {t} = useI18n()
 const settingStore = useSettingStore()
+const userStore = useUserStore()
+const canManageSettings = computed(() => canManageGatewaySettings(userStore.user))
 const state = useGatewayAdminSettings(computed(() => settingStore.settings), settingSet)
 const {enabled, imapHostname, smtpHostname, saving, errorKey} = state
 const connectivity = useGatewayConnectivity(computed(() => settingStore.settings),

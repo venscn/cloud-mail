@@ -73,7 +73,7 @@ test('production admin template SSR shows two independent controls, dirty/loadin
     const render=runInNewContext(executable+'\n;render',{Vue})
     for(const labels of [zh,en]) {
         const f=fixture();f.drafts.imap.value='unsaved.example.test';f.state.tests.smtp.code='CONNECT_TLS_FAILED';f.state.tests.smtp.result={ok:false,stages:{dns:'passed',secureConnection:'failed',protocol:'pending'}}
-        const app=Vue.createSSRApp({setup:()=>({enabled:0,imapHostname:f.drafts.imap,smtpHostname:f.drafts.smtp,saving:false,errorKey:'',disabled:true,tests:f.state.tests,connectivity:f.state,saveSettings:()=>{}}),render})
+        const app=Vue.createSSRApp({setup:()=>({canManageSettings:true,enabled:0,imapHostname:f.drafts.imap,smtpHostname:f.drafts.smtp,saving:false,errorKey:'',disabled:true,tests:f.state.tests,connectivity:f.state,saveSettings:()=>{}}),render})
         app.config.globalProperties.$t=key=>labels[key] || key
         for(const tag of ['el-form','el-form-item','el-input','el-switch','el-button','el-alert'])app.component(tag,{inheritAttrs:false,setup:(_props,{attrs,slots})=>()=>Vue.h(tag==='el-button'?'button':'div',attrs,slots.default?.())})
         try {
