@@ -1,0 +1,58 @@
+<template>
+  <section class="gateway-admin" aria-labelledby="gateway-admin-title">
+    <div class="card-title" id="gateway-admin-title">{{ $t('gatewayTitle') }}</div>
+    <div class="card-content">
+      <el-form label-position="top" @submit.prevent="saveSettings">
+        <el-form-item :label="$t('gatewayAdminEnabled')">
+          <el-switch v-model="enabled" :active-value="1" :inactive-value="0"
+                     :disabled="disabled || saving" :aria-label="$t('gatewayAdminEnabled')" />
+        </el-form-item>
+        <el-form-item :label="$t('gatewayServer')">
+          <el-input v-model="hostname" :maxlength="253" :disabled="disabled || saving"
+                    :placeholder="$t('gatewayAdminHostnamePlaceholder')" autocomplete="off" />
+          <p class="help-text">{{ $t('gatewayAdminHostnameHint') }}</p>
+        </el-form-item>
+        <el-alert v-if="errorKey" :title="$t(errorKey)" type="error" show-icon :closable="false" />
+        <p class="help-text">{{ $t('gatewayAdminVisibilityHint') }}</p>
+        <p class="help-text">{{ $t('gatewayDeploymentRequired') }}</p>
+        <el-button type="primary" native-type="submit" :loading="saving" :disabled="disabled || saving">
+          {{ $t('save') }}
+        </el-button>
+      </el-form>
+    </div>
+  </section>
+</template>
+
+<script setup>
+import {computed, onBeforeUnmount} from 'vue'
+import {useI18n} from 'vue-i18n'
+import {ElMessage} from 'element-plus'
+import {useSettingStore} from '@/store/setting.js'
+import {settingSet} from '@/request/setting.js'
+import {useGatewayAdminSettings} from './use-gateway-admin-settings.js'
+
+const props = defineProps({disabled: {type: Boolean, default: false}})
+const emit = defineEmits(['saving'])
+const {t} = useI18n()
+const settingStore = useSettingStore()
+const state = useGatewayAdminSettings(computed(() => settingStore.settings), settingSet)
+const {enabled, hostname, saving, errorKey} = state
+
+async function saveSettings() {
+  if (props.disabled || saving.value) return
+  emit('saving', true)
+  try {
+    if (await state.save()) ElMessage.success(t('saveSuccessMsg'))
+  } finally {
+    emit('saving', false)
+  }
+}
+onBeforeUnmount(state.dispose)
+</script>
+
+<style scoped>
+.card-title { font-size: 15px; font-weight: bold; padding: 15px 20px 12px; border-bottom: 1px solid var(--el-border-color); }
+.card-content { padding: 20px; }
+.help-text { color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.6; margin: 8px 0 12px; overflow-wrap: anywhere; }
+.el-form { min-width: 0; }
+</style>

@@ -135,6 +135,10 @@
             </div>
           </div>
 
+          <div class="settings-card">
+            <GatewayAdminSettings :disabled="settingLoading || !settingReady" @saving="settingLoading = $event" />
+          </div>
+
           <!-- Email Sending Settings Card -->
           <div class="settings-card">
             <div class="card-title">{{ $t('emailSetting') }}</div>
@@ -995,6 +999,7 @@ import {storeToRefs} from "pinia";
 import {debounce} from 'lodash-es'
 import {isDomain, isEmail, isIpUrl} from "@/utils/verify-utils.js";
 import loading from "@/components/loading/index.vue";
+import GatewayAdminSettings from "@/components/gateway-admin-settings/index.vue";
 import {getTextWidth} from "@/utils/text.js";
 import {fileToBase64} from "@/utils/file-utils.js"
 import {useI18n} from 'vue-i18n';

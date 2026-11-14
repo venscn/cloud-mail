@@ -32,7 +32,6 @@
         </div>
       </div>
     </div>
-    <GatewaySettings class="gateway-section" />
     <div class="language">
       <div class="title">{{$t('language')}}</div>
       <div class="language-row setting-row">
@@ -61,6 +60,7 @@
         </div>
       </div>
     </div>
+    <GatewaySettings v-if="gatewayConfig.enabled" class="gateway-section" />
     <div class="del-email" v-perm="'my:delete'">
       <div class="title">{{$t('deleteUser')}}</div>
       <div style="color: var(--regular-text-color);">
@@ -82,7 +82,8 @@
   </div>
 </template>
 <script setup>
-import {reactive, ref, defineOptions} from 'vue'
+import {computed, reactive, ref, defineOptions} from 'vue'
+import {gatewayDisplayConfig} from '@/components/gateway-settings/gateway-config.js'
 import {resetPassword, userDelete} from "@/request/my.js";
 import {useUserStore} from "@/store/user.js";
 import router from "@/router/index.js";
@@ -97,6 +98,7 @@ import GatewaySettings from "@/components/gateway-settings/index.vue";
 const { t } = useI18n()
 const accountStore = useAccountStore()
 const settingStore = useSettingStore()
+const gatewayConfig = computed(() => gatewayDisplayConfig(settingStore.settings))
 const uiStore = useUiStore()
 const userStore = useUserStore();
 const setPwdLoading = ref(false)
