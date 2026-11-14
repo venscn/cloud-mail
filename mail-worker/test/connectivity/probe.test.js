@@ -10,9 +10,9 @@ function doh(addresses = ['192.0.2.1']) {
 		return Response.json({Status:0,Question:[{name:host,type}],Answer:type === 1 ? addresses.map(data => ({type:1,data})) : []});
 	});
 }
-function socketFixture(text, {opened = Promise.resolve({}), hang = false} = {}) {
+function socketFixture(text, {opened = Promise.resolve({}), hang = false, chunks} = {}) {
 	const writes = []; const cancel = vi.fn();
-	const readable = new ReadableStream({start(c) {if (text) c.enqueue(new TextEncoder().encode(text)); if (!hang) c.close();},cancel});
+	const readable = new ReadableStream({start(c) {for (const chunk of chunks || (text ? [new TextEncoder().encode(text)] : [])) c.enqueue(chunk); if (!hang) c.close();},cancel});
 	const socket = {opened,closed:opened.then(() => undefined),readable,writable:new WritableStream({write(v){writes.push(new TextDecoder().decode(v));}}),close:vi.fn(async () => {})};
 	return {socket,writes,cancel,connect:vi.fn(() => socket)};
 }
@@ -44,6 +44,29 @@ describe('bounded unauthenticated protocols',() => {
 		expect(f.connect).toHaveBeenCalledWith({hostname:host,port},{secureTransport:'on',allowHalfOpen:false});
 		expect(f.writes.join('')).toBe(commands); expect(f.socket.close).toHaveBeenCalledOnce();
 		expect(f.writes.join('')).not.toMatch(/AUTH|LOGIN|MAIL FROM|RCPT|DATA|SELECT|FETCH/);
+	});
+	it.each([['imap',imap],['smtp',smtp]])('accepts %s greeting UTF-8 split across byte boundaries',async (protocol,text) => {
+		const encoded = new TextEncoder().encode(text.replace('synthetic','欢迎'));
+		const chunks = Array.from(encoded,byte => new Uint8Array([byte]));
+		const f = socketFixture('',{chunks});
+		const result = await probeGateway(protocol,host,{...f,fetcher:doh(),addressPolicy:documentationPolicy});
+		expect(result.ok).toBe(true); expect(f.socket.close).toHaveBeenCalledOnce();
+		expect(f.writes.join('')).not.toMatch(/AUTH|LOGIN|MAIL FROM|RCPT|DATA/);
+	});
+	it.each([
+		[new TextEncoder().encode('220 '),new Uint8Array([0xe6]),new Uint8Array([0x28,0x8e]),new TextEncoder().encode('\r\n')],
+		[new TextEncoder().encode('220 '),new Uint8Array([0xe6,0xac])],
+		[new Uint8Array([...new TextEncoder().encode(smtp),0xe6])]
+	].map(chunks => [chunks]))('rejects malformed/truncated streamed UTF-8 and closes without raw banner %#',async chunks => {
+		const f = socketFixture('',{chunks});
+		const result = await probeGateway('smtp',host,{...f,fetcher:doh(),addressPolicy:documentationPolicy,timeoutMs:100});
+		expect(result).toMatchObject({ok:false,code:'PROTOCOL_FAILED'}); expect(f.socket.close).toHaveBeenCalledOnce();
+		expect(JSON.stringify(result)).not.toContain('220');
+	});
+	it('enforces byte limits on streamed multibyte banners and closes',async () => {
+		const f = socketFixture('',{chunks:[new TextEncoder().encode('220 '+ '欢'.repeat(800) +'\r\n')],hang:true});
+		const result = await probeGateway('smtp',host,{...f,fetcher:doh(),addressPolicy:documentationPolicy});
+		expect(result).toMatchObject({ok:false,code:'LIMIT_EXCEEDED'}); expect(f.socket.close).toHaveBeenCalledOnce();
 	});
 	it.each(['certificate failure','proxy request failed, cannot connect to the specified address','TCP Loop detected'])('fails closed on platform TLS/egress rejection without raw details (%s)',async reason => {
 		const f = socketFixture('',{opened:Promise.reject(new Error(reason))});

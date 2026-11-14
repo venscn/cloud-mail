@@ -96,6 +96,7 @@ export async function probeGateway(protocol, rawHost, {connect, fetcher = fetch,
 	if (signal?.aborted) cancel();
 	const wait = promise => Promise.race([promise,stop]);
 	let socket, reader, writer, stage = 'dns', bytes = 0, lines = 0, buffer = '';
+	const decoder = new TextDecoder('utf-8',{fatal:true});
 	async function line() {
 		for (;;) {
 			const end = buffer.indexOf('\r\n');
@@ -107,10 +108,10 @@ export async function probeGateway(protocol, rawHost, {connect, fetcher = fetch,
 			}
 			if (buffer.length > 2048) fail('LIMIT_EXCEEDED');
 			const chunk = await wait(reader.read());
-			if (chunk.done) fail('PROTOCOL_FAILED');
+			if (chunk.done) { decoder.decode(); fail('PROTOCOL_FAILED'); }
 			bytes += chunk.value.byteLength;
 			if (bytes > 16384) fail('LIMIT_EXCEEDED');
-			buffer += new TextDecoder('utf-8',{fatal:true}).decode(chunk.value);
+			buffer += decoder.decode(chunk.value,{stream:true});
 		}
 	}
 	const write = text => wait(writer.write(new TextEncoder().encode(text+'\r\n')));
@@ -148,6 +149,7 @@ export async function probeGateway(protocol, rawHost, {connect, fetcher = fetch,
 				else fail('PROTOCOL_FAILED');
 			}
 		}
+		decoder.decode(); // Reject a truncated UTF-8 sequence already consumed after the final reply.
 		stages.protocol = 'passed'; return {ok:true, code:'OK', stages};
 	} catch (e) {
 		stages[stage] = 'failed';
