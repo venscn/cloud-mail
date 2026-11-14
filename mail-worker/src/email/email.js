@@ -12,6 +12,8 @@ import userService from '../service/user-service';
 import telegramService from '../service/telegram-service';
 import aiService from '../service/ai-service';
 import webhookService from '../service/webhook-service';
+import { captureReceivedRaw } from '../gateway/raw.js';
+import { MAX_RAW_MESSAGE_BYTES, readBounded } from '../gateway/validation.js';
 
 export async function email(message, env, ctx) {
 
@@ -43,16 +45,16 @@ export async function email(message, env, ctx) {
 			return;
 		}
 
-		const reader = message.raw.getReader();
-		let content = '';
-
-		while (true) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			content += new TextDecoder().decode(value);
+		// Preserve octets, including UTF-8 sequences split between stream chunks and
+		// binary MIME bodies. Parse a view of these bytes; never reserialize received mail.
+		let rawBytes;
+		try {
+			rawBytes = await readBounded(message.raw, MAX_RAW_MESSAGE_BYTES, message.rawSize);
+		} catch (error) {
+			if (error.code === 'MESSAGE_TOO_LARGE') { message.setReject('Message exceeds the 25 MiB size limit'); return; }
+			throw error;
 		}
-
-		const email = await PostalMime.parse(content);
+		const email = await PostalMime.parse(rawBytes);
 
 
 		const blockFlag = checkBlock(blackSubject, blackContent, blackFrom, email);
@@ -158,6 +160,10 @@ export async function email(message, env, ctx) {
 			console.error(e);
 		}
 
+		// Capture exact bytes before projection when the optional gateway storage is
+		// ready. A pre-migration/S3/KV-only deployment must still receive web mail;
+		// an uncaptured message is explicitly reconstructed on a later gateway read.
+		await captureReceivedRaw({ env }, { emailId: emailRow.emailId, accountId: emailRow.accountId, expectedUserId: emailRow.userId, bytes: rawBytes });
 		emailRow = await emailService.completeReceive({ env }, account ? emailConst.status.RECEIVE : emailConst.status.NOONE, emailRow.emailId);
 
 

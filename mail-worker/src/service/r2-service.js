@@ -1,6 +1,7 @@
 import s3Service from './s3-service';
 import settingService from './setting-service';
 import kvObjService from './kv-obj-service';
+import { isPrivateObjectKey } from '../gateway/private-objects.js';
 
 const r2Service = {
 
@@ -61,6 +62,7 @@ const r2Service = {
 	 * can serve KV / R2 / S3 the same way.
 	 */
 	async toObjResp(c, key) {
+		if (isPrivateObjectKey(key)) return null;
 		try {
 			const storageType = await this.storageType(c);
 

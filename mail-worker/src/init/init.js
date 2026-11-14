@@ -1,6 +1,7 @@
 import settingService from '../service/setting-service';
 import emailUtils from '../utils/email-utils';
 import {emailConst} from "../const/entity-const";
+import { applyGatewayMigration } from '../gateway/schema.js';
 
 const dbInit = {
 	async init(c) {
@@ -36,6 +37,8 @@ const dbInit = {
 		await this.v3_5DB(c);
 		await this.v3_6DB(c);
 		await this.v3_7DB(c);
+		// Idempotent D1-only migration; no R2 reads or whole-mailbox MIME backfill.
+		await applyGatewayMigration(c);
 		await settingService.refresh(c);
 		return c.text('success');
 	},
