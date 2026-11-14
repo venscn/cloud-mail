@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import PostalMime from 'postal-mime';
+import { sha256 } from '../../src/gateway/validation.js';
 import { createSyntheticEnvironment } from './sqlite-adapter.js';
 
 // Only integration boundaries are replaced: the real receive handler, postal-mime,
-// Drizzle insert/completion and gateway D1/R2 code run against synthetic data.
+// Drizzle insert/completion and gateway metadata run against synthetic data.
 vi.mock('../../src/service/smtp-send-service', () => ({ default: {} }));
 vi.mock('../../src/service/setting-service', () => ({ default: { query: vi.fn() } }));
 vi.mock('../../src/service/account-service', () => ({ default: { selectByEmailIncludeDel: vi.fn() } }));
@@ -44,7 +46,7 @@ function message(bytes = mime, rawSize = bytes.byteLength) {
 function received(env) { return env.db.sqlite.prepare('SELECT * FROM email ORDER BY email_id DESC LIMIT 1').get(); }
 
 describe('ordinary receive compatibility through the actual handler', () => {
-	it.each(['unmigrated', 'missing-r2', 'r2-put-failure'])('completes ordinary web mail when optional gateway capture is %s', async mode => {
+	it.each(['unmigrated', 'missing-r2', 'r2-put-failure'])('completes ordinary web mail without new raw capture: %s', async mode => {
 		const env = await environment({ migrate: mode !== 'unmigrated' });
 		if (mode === 'missing-r2') delete env.r2;
 		if (mode === 'r2-put-failure') env.r2.put = vi.fn().mockRejectedValue(new Error('synthetic storage failure'));
@@ -55,22 +57,31 @@ describe('ordinary receive compatibility through the actual handler', () => {
 		expect(row).toMatchObject({ account_id: 1, user_id: 1, is_del: 0, status: 0 });
 		expect(row.text).toContain('精确字节 café');
 		if (mode === 'unmigrated') await expect(ensureGatewaySchema({ env }).catch(error => { throw safeGatewayError(error); })).rejects.toMatchObject({ status: 503, code: 'GATEWAY_NOT_INITIALIZED' });
-		else expect(env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM gateway_email_raw').get().n).toBe(0);
+		else {
+			expect(env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM gateway_email_raw').get().n).toBe(0);
+			expect(env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM gateway_raw').get().n).toBe(0);
+		}
+		if (mode === 'r2-put-failure') expect(env.r2.put).not.toHaveBeenCalled();
 	});
-	it('captures the original stream bytes before publishing the completed legacy row', async () => {
+	it('publishes the ordinary row without raw uploads and later serves reconstructed, not received, MIME', async () => {
 		const env = await environment();
-		const put = env.r2.put.bind(env.r2);
-		env.r2.put = vi.fn(async (...args) => {
-			expect(received(env)).toMatchObject({ status: 6, is_del: 1 });
-			expect(env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM gateway_messages').get().n).toBe(0);
-			return put(...args);
-		});
+		const put = vi.spyOn(env.r2, 'put');
 		await receive(message(), env, {});
-		const raw = env.db.sqlite.prepare('SELECT r.* FROM gateway_raw r JOIN gateway_email_raw e ON e.raw_id=r.id').get();
-		expect(raw.source).toBe('received');
-		expect(raw.size).toBe(mime.byteLength);
-		expect(await readPrivateRaw({ env }, raw)).toEqual(mime);
 		expect(received(env)).toMatchObject({ status: 0, is_del: 0 });
+		expect(put).not.toHaveBeenCalled();
+		expect(env.r2.objects.size).toBe(0);
+		expect(env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM gateway_raw').get().n).toBe(0);
+		expect(env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM gateway_email_raw').get().n).toBe(0);
+		delete env.r2;
+		await freezeLegacyEmail({ env }, received(env).email_id, 1);
+		const raw = env.db.sqlite.prepare('SELECT r.* FROM gateway_raw r JOIN gateway_email_raw e ON e.raw_id=r.id').get();
+		expect(raw).toMatchObject({ source: 'reconstructed', object_key: `legacy:${received(env).email_id}` });
+		const bytes = await readPrivateRaw({ env }, raw);
+		expect(bytes).not.toEqual(mime);
+		expect(new TextDecoder().decode(bytes)).toContain('X-CMG-Reconstructed: yes');
+		expect((await PostalMime.parse(bytes)).text).toContain('精确字节 café');
+		expect(raw.size).toBe(bytes.byteLength);
+		expect(raw.sha256).toBe(await sha256(bytes));
 	});
 	it('labels later migration recovery as reconstructed, never original received MIME', async () => {
 		const env = await environment({ migrate: false });
