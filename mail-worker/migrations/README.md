@@ -33,7 +33,9 @@ These assets belong to the **matching Cloud Mail Worker source release**, not th
 
 The migration uses `CREATE ... IF NOT EXISTS`, `INSERT OR IGNORE`, uniqueness constraints, and stable counters. Replaying this **same** v1 migration does not reset UIDs, UIDVALIDITY, revisions, raw mappings or credentials. Future schema changes need a new versioned migration; changing a `CREATE TRIGGER IF NOT EXISTS` body does not upgrade an already-created trigger.
 
-## 0002: administrator-controlled client display settings
+## 0002: historical single-host display settings (superseded)
+
+The following describes the historical release only. Current runtime ignores `gateway_hostname`, rejects `gatewayHostname` writes and does not expose it. Apply the independent 0003 migration below and configure the two new hosts; do not replay 0002 for this update.
 
 [0002_gateway_settings.sql](./0002_gateway_settings.sql) adds only `setting.gateway_enabled` (integer 0/1, default 0) and `setting.gateway_hostname` (text, default empty). **Do not change or replay 0001 for this feature.** It does not change protocol authentication, existing application passwords, message storage or delivery. Turning the display switch off is not a network security boundary and deliberately does not disconnect an already deployed gateway.
 
@@ -51,13 +53,32 @@ node scripts/gateway-settings-migration.mjs --config '<OPERATOR_CONFIG>' --datab
 
 The tool executes only `PRAGMA table_info(setting)` and the missing `ALTER TABLE` statements, then verifies both column names. It does not load configuration itself, select mail/credentials/settings values, update KV, deploy a Worker or implicitly choose production. Wrangler reads the explicitly supplied operator configuration. Run one migration operator at a time. Missing legacy tables or actual D1 failures fail loudly, not as duplicate-column success. [The SQL file](./0002_gateway_settings.sql) is an alternative for a migration runner tracking it exactly once; raw SQLite `ADD COLUMN` statements are **not** blindly replayable. Do not run all directory migrations merely to apply this change.
 
-The existing explicit secret-authorized initializer also calls [the guarded helper](../src/init/gateway-settings-migration.js), and the fresh installation schema includes both defaults. Ordinary startup/requests do not migrate. After columns exist, deploy the matching Worker, then save the desired configuration through the existing authorized administrator settings flow; its existing refresh writes D1 values into KV. A hostname may be saved with the switch disabled first. Until that save/refresh, legacy KV snapshots lacking either field remain disabled (no implicit backfill from a request). Verify public `websiteConfig` reports the expected safe fields and that non-admin requests still cannot edit/query administrator settings. Rollback keeps the additive columns; revert the Worker/UI, not database contents. Do not drop columns, reset settings, revoke passwords or touch gateway tables.
+The historical release used [the 0002 helper](../src/init/gateway-settings-migration.js). Current initialization no longer invokes that helper or creates a single-host column. Keep the historical SQL/helper unchanged for already-deployed migration history; they are not the current update path. Ordinary startup/requests do not migrate. Do not drop columns, reset settings, revoke passwords or touch gateway tables.
 
 Offline checks (no Wrangler/production config, no account/mail/password reads, no remote service):
 
 ```sh
 node node_modules/vitest/vitest.mjs run --config vitest.settings.config.js
 ```
+
+## 0003: separate IMAP and SMTP display hostnames
+
+[0003_gateway_split_hosts.sql](./0003_gateway_split_hosts.sql) adds only two TEXT NOT NULL columns, `gateway_imap_hostname` and `gateway_smtp_hostname`, default empty string. No data backfill, mail-table migration or storage change is needed. **Do not edit/replay 0001 or 0002 to apply 0003.** Existing installations need the `gateway_enabled` column from the historical release. Fresh initialization includes only the new host columns; the explicit initializer uses the separate 0003 guarded helper, never ordinary startup.
+
+Current runtime API fields are only `gatewayEnabled` (numeric 0/1), `gatewayImapHostname` and `gatewaySmtpHostname` (strings). The hosts update independently and never fall back to `gatewayHostname`. Missing/null/empty/invalid values fail closed. Enabling requires both hosts to be valid nonempty ASCII FQDNs under the existing syntax rules. Supplied non-string/invalid hosts are rejected even while disabled; empty strings may be saved only while disabled. Legacy `gatewayHostname` parameters are rejected before any write, and old cache values are stripped from reads. Users must configure both new hosts themselves. Historical DB columns/data remain untouched but are not mapped or read by the runtime; no dangerous DROP is required. The setting is display-only: authentication, application passwords and delivery are unchanged.
+
+D1 and refresh/KV preserve stored state for validation. Admin `/setting/query` (service `get`) and public `websiteConfig` resolve the same safe effective values: normalized strings, invalid/empty as empty, and enabled 0 unless both are valid. Output resolution/masking never mutates source state. When saving changes, new clients send the current displayed `gatewayEnabled` explicitly plus only changed host fields, not all settings; this prevents an old stored-on flag from unexpectedly enabling newly entered hosts. No old single-host field is returned by admin/public reads.
+
+An authorized operator, after backup and isolated rehearsal, uses the independent guarded tool:
+
+```sh
+# Plan only; explicit target/config and local/remote are mandatory.
+node scripts/gateway-split-hosts-migration.mjs --config '<OPERATOR_CONFIG>' --database '<D1_NAME_OR_ID>' --local
+# Apply only 0003 missing columns; safe to repeat or resume a partial application.
+node scripts/gateway-split-hosts-migration.mjs --config '<OPERATOR_CONFIG>' --database '<D1_NAME_OR_ID>' --local --apply
+```
+
+This tool checks `PRAGMA table_info(setting)`, requires `gateway_enabled`, adds only missing 0003 columns and verifies them. It does not select settings/mail/credentials, replay prior migrations, refresh KV, deploy, or discover configuration. Only a separately authorized release substitutes `--remote`. Run one operator at a time. The SQL alternative is one-shot, not blindly replayable. Deploy matching Worker only after columns exist, then refresh/save through the authorized admin flow. Old KV lacking split fields remains display-disabled until both new hosts are configured. Rollback retains additive columns and historical data. Offline settings tests exercise real synthetic SQLite and mock the CLI (no Wrangler/config/network).
 
 ## Existing storage only; no new R2 prerequisite
 

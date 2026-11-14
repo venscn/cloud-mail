@@ -20,7 +20,7 @@ const settingService = {
 		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
 		settingRow.smtpChannels = JSON.parse(settingRow.smtpChannels || '{}');
 		settingRow.sendChain = JSON.parse(settingRow.sendChain || '["resend","sendpulse","qq","cf"]');
-		Object.assign(settingRow, gatewayDisplayConfig(settingRow));
+		// Preserve stored state for validation; safe display values are output-only.
 		settingRow.r2Domain = '';
 		c.set('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
@@ -30,7 +30,7 @@ const settingService = {
 
 		if (c.get?.('setting')) {
 			const cached = c.get('setting');
-			Object.assign(cached, gatewayDisplayConfig(cached));
+			delete cached.gatewayHostname;
 			return cached;
 		}
 
@@ -67,7 +67,7 @@ const settingService = {
 		}
 
 		setting.projectLink = projectLink;
-		Object.assign(setting, gatewayDisplayConfig(setting));
+		delete setting.gatewayHostname;
 
 		setting.emailPrefixFilter = setting.emailPrefixFilter.split(",").filter(Boolean);
 
@@ -77,10 +77,12 @@ const settingService = {
 
 	async get(c, showSiteKey = false) {
 
-		const [settingRow, recordList] = await Promise.all([
+		const [source, recordList] = await Promise.all([
 			await this.query(c),
 			verifyRecordService.selectListByIP(c)
 		]);
+		// Masking/output normalization must not mutate the request-local source.
+		const settingRow = { ...structuredClone(source), ...gatewayDisplayConfig(source) };
 
 
 		if (!showSiteKey) {
@@ -296,7 +298,8 @@ const settingService = {
 			minEmailPrefix: settingRow.minEmailPrefix,
 			projectLink: settingRow.projectLink,
 			gatewayEnabled: settingRow.gatewayEnabled,
-			gatewayHostname: settingRow.gatewayHostname
+			gatewayImapHostname: settingRow.gatewayImapHostname,
+			gatewaySmtpHostname: settingRow.gatewaySmtpHostname
 		};
 	},
 

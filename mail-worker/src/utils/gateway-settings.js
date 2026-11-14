@@ -16,17 +16,24 @@ export function normalizeGatewayHostname(value) {
 	return hostname;
 }
 
-// Old/partial/invalid KV snapshots must not reveal a configured feature by accident.
+// Missing/empty/invalid independent hosts fail closed. No old-host fallback.
 export function gatewayDisplayConfig(value) {
-	let gatewayHostname = '';
-	try { gatewayHostname = normalizeGatewayHostname(value.gatewayHostname); } catch { /* fail closed */ }
+	const safeHostname = value => {
+		try { return normalizeGatewayHostname(value); } catch { return ''; }
+	};
+	const gatewayImapHostname = safeHostname(value.gatewayImapHostname);
+	const gatewaySmtpHostname = safeHostname(value.gatewaySmtpHostname);
 	return {
-		gatewayEnabled: value.gatewayEnabled === 1 && gatewayHostname ? 1 : 0,
-		gatewayHostname
+		gatewayEnabled: value.gatewayEnabled === 1 && gatewayImapHostname && gatewaySmtpHostname ? 1 : 0,
+		gatewayImapHostname,
+		gatewaySmtpHostname
 	};
 }
 
 export function gatewaySettingsPatch(current, params) {
+	if (Object.hasOwn(params, 'gatewayHostname')) {
+		throw new BizError('gatewayHostname is no longer supported; configure IMAP and SMTP hostnames separately');
+	}
 	const patch = {};
 	if (params.gatewayEnabled !== undefined) {
 		if (params.gatewayEnabled !== 0 && params.gatewayEnabled !== 1) {
@@ -34,13 +41,14 @@ export function gatewaySettingsPatch(current, params) {
 		}
 		patch.gatewayEnabled = params.gatewayEnabled;
 	}
-	if (params.gatewayHostname !== undefined) {
-		patch.gatewayHostname = normalizeGatewayHostname(params.gatewayHostname);
+	for (const key of ['gatewayImapHostname', 'gatewaySmtpHostname']) {
+		if (params[key] !== undefined) patch[key] = normalizeGatewayHostname(params[key]);
 	}
 	if (Object.keys(patch).length) {
-		const next = { ...gatewayDisplayConfig(current), ...patch };
-		if (next.gatewayEnabled === 1 && !next.gatewayHostname) {
-			throw new BizError('A valid gateway hostname is required when enabled');
+		// Validate stored state, not the fail-closed display switch.
+		const next = { ...current, ...patch };
+		if (next.gatewayEnabled === 1 && gatewayDisplayConfig(next).gatewayEnabled !== 1) {
+			throw new BizError('Valid IMAP and SMTP gateway hostnames are required when enabled');
 		}
 	}
 	return patch;

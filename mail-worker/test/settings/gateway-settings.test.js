@@ -4,6 +4,7 @@ import { getTableConfig } from 'drizzle-orm/sqlite-core';
 import { createSQLiteD1 } from '../gateway-core/sqlite-adapter.js';
 import setting from '../../src/entity/setting.js';
 import { GATEWAY_SETTINGS_COLUMNS, applyGatewaySettingsMigration } from '../../src/init/gateway-settings-migration.js';
+import { GATEWAY_SPLIT_HOSTS_COLUMNS, applyGatewaySplitHostsMigration } from '../../src/init/gateway-split-hosts-migration.js';
 import { normalizeGatewayHostname, gatewayDisplayConfig } from '../../src/utils/gateway-settings.js';
 
 vi.mock('../../src/service/r2-service', () => ({ default: { storageType: async () => 'kv' } }));
@@ -14,7 +15,6 @@ vi.mock('../../src/service/perm-service', () => ({ default: { userPermKeys: asyn
 vi.mock('../../src/utils/jwt-utils', () => ({ default: { verifyToken: async (_c, token) => token ? { userId: token, token, gen: 'fixture-gen' } : null } }));
 vi.mock('../../src/security/user-context', () => ({ default: { getToken: async () => null } }));
 vi.mock('../../src/i18n/i18n', () => ({ t: key => key }));
-
 import settingService from '../../src/service/setting-service.js';
 import { dbInit } from '../../src/init/init.js';
 import constant from '../../src/const/constant.js';
@@ -33,126 +33,179 @@ function fixture() {
 	// Synthetic markers only; never reads any account/mail/credential table.
 	db.sqlite.exec("UPDATE setting SET title='Synthetic site', secret_key='synthetic-turnstile-secret', smtp_channels='{}', resend_tokens='{}', webhook_secret='synthetic-webhook-secret', github_client_secret='synthetic-oauth-secret', s3_secret_key='synthetic-storage-secret'");
 	const values = new Map();
-	const env = {
-		db, domain: ['example.test'], admin: 'admin@example.test',
-		kv: {
-			async get(key, options) { const value = values.get(key); return options?.type === 'json' && value ? JSON.parse(value) : value ?? null; },
-			async put(key, value) { values.set(key, value); }
-		}
-	};
+	const env = { db, domain: ['example.test'], admin: 'admin@example.test', kv: {
+		async get(key, options) { const value = values.get(key); return options?.type === 'json' && value ? JSON.parse(value) : value ?? null; },
+		async put(key, value) { values.set(key, value); }
+	} };
 	const state = new Map();
 	const c = { env, get: key => state.get(key), set: (key, value) => state.set(key, value) };
 	return { c, db, values, state, env };
 }
+const hosts = { gatewayImapHostname: 'imap.example.test', gatewaySmtpHostname: 'smtp.example.test' };
+const invalidHosts = ['https://mail.example.test', 'mail.example.test/path', 'mail.example.test:993', 'user@mail.example.test', 'mail.example.test?x=1', 'mail.example.test#x', 'mail.example.test\\x', 'mail.example.test\r\nX: injected', '\tmail.example.test', 'mail.example.test\0', '<script>.example', "mail.example.test'; DROP TABLE setting;--", 'mail..test', '.example.test', 'mail.example.test.', '-mail.example.test', 'mail-.example.test', 'm_ail.example.test', 'máil.example.test', 'localhost', '127.0.0.1', '[::1]', 'a'.repeat(64) + '.test', `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(63)}`, null, 123];
+function safePublic(result) {
+	for (const key of ['gatewayHostname', 'secretKey', 'smtpChannels', 'resendTokens', 's3SecretKey', 's3AccessKey', 'tgBotToken', 'webhookSecret', 'githubClientSecret', 'googleClientSecret', 'linuxdoClientSecret']) expect(result).not.toHaveProperty(key);
+	expect(JSON.stringify(result)).not.toContain('synthetic-');
+}
 
-describe('gateway hostname validation and fail-closed display', () => {
-	it.each([' Mail.Example.TEST ', 'xn--bcher-kva.example', 'a-b.example', 'a'.repeat(63) + '.test'])( 'normalizes valid ASCII DNS hostname %s', value => {
+describe('strict ASCII FQDNs and independent fail-closed display', () => {
+	it.each([' Mail.Example.TEST ', 'xn--bcher-kva.example', 'a-b.example', 'a'.repeat(63) + '.test'])('normalizes valid host %s', value => {
 		expect(normalizeGatewayHostname(value)).toBe(value.trim().toLowerCase());
 	});
-	it.each(['https://mail.example.test', 'mail.example.test/path', 'mail.example.test:993', 'user@mail.example.test', 'mail.example.test?x=1', 'mail.example.test#x', 'mail.example.test\\x', 'mail.example.test\r\nX: injected', '\tmail.example.test', 'mail.example.test\0', '<script>.example', "mail.example.test'; DROP TABLE setting;--", 'mail..test', '.example.test', 'mail.example.test.', '-mail.example.test', 'mail-.example.test', 'm_ail.example.test', 'máil.example.test', 'localhost', '127.0.0.1', '[::1]', 'a'.repeat(64) + '.test', `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(63)}`, null, 123])('rejects invalid hostname %#', value => {
-		expect(() => normalizeGatewayHostname(value)).toThrow();
-	});
-	it('keeps defaults and partial/invalid/stale snapshots disabled', () => {
-		for (const value of [{}, { gatewayEnabled: 1 }, { gatewayHostname: 'mail.example.test' }, { gatewayEnabled: '1', gatewayHostname: 'mail.example.test' }, { gatewayEnabled: 1, gatewayHostname: 'https://bad.example.test' }]) {
-			expect(gatewayDisplayConfig(value).gatewayEnabled).toBe(0);
+	it.each(invalidHosts)('rejects invalid hostname %#', value => expect(() => normalizeGatewayHostname(value)).toThrow());
+	it.each(['gatewayImapHostname', 'gatewaySmtpHostname'])('never falls back from missing/empty/invalid %s to legacy', key => {
+		for (const value of [undefined, '', 'bad:993', null, 123]) {
+			expect(gatewayDisplayConfig({ gatewayEnabled: 1, ...hosts, [key]: value, gatewayHostname: 'legacy.example.test' })).toMatchObject({ gatewayEnabled: 0, [key]: '' });
 		}
-		expect(gatewayDisplayConfig({ gatewayEnabled: 1, gatewayHostname: ' MAIL.EXAMPLE.TEST ' })).toEqual({ gatewayEnabled: 1, gatewayHostname: 'mail.example.test' });
+		expect(gatewayDisplayConfig({ gatewayEnabled: 1, gatewayHostname: 'legacy.example.test' })).toEqual({ gatewayEnabled: 0, gatewayImapHostname: '', gatewaySmtpHostname: '' });
+	});
+	it('only accepts numeric on and two valid hosts', () => {
+		for (const gatewayEnabled of [undefined, '1', true, null, 2, 0]) expect(gatewayDisplayConfig({ gatewayEnabled, ...hosts }).gatewayEnabled).toBe(0);
+		expect(gatewayDisplayConfig({ gatewayEnabled: 1, gatewayImapHostname: ' IMAP.Example.TEST ', gatewaySmtpHostname: ' SMTP.Example.TEST ' })).toEqual({ gatewayEnabled: 1, ...hosts });
 	});
 });
 
-describe('real setting service with synthetic SQLite and KV', () => {
-	it('persists normalized fields, refreshes existing KV and preserves unrelated settings', async () => {
-		const { c, db, values, state } = fixture();
-		await settingService.refresh(c);
-		await settingService.set(c, { gatewayEnabled: 1, gatewayHostname: ' MAIL.Example.TEST ' });
-		expect(db.sqlite.prepare('SELECT gateway_enabled,gateway_hostname,title,secret_key FROM setting').get()).toMatchObject({ gateway_enabled: 1, gateway_hostname: 'mail.example.test', title: 'Synthetic site', secret_key: 'synthetic-turnstile-secret' });
-		expect(JSON.parse(values.get(KvConst.SETTING))).toMatchObject({ gatewayEnabled: 1, gatewayHostname: 'mail.example.test' });
+describe('real service with synthetic SQLite/KV', () => {
+	it('saves, caches and echoes separate normalized hosts; changing either preserves the other and unrelated settings', async () => {
+		const { c, db, values, state } = fixture(); await settingService.refresh(c);
+		await settingService.set(c, { gatewayEnabled: 1, gatewayImapHostname: ' IMAP.Example.TEST ', gatewaySmtpHostname: ' SMTP.Example.TEST ' });
+		const expected = { gatewayEnabled: 1, ...hosts };
+		expect(db.sqlite.prepare('SELECT gateway_enabled,gateway_imap_hostname,gateway_smtp_hostname,title,secret_key FROM setting').get()).toEqual({ gateway_enabled: 1, gateway_imap_hostname: hosts.gatewayImapHostname, gateway_smtp_hostname: hosts.gatewaySmtpHostname, title: 'Synthetic site', secret_key: 'synthetic-turnstile-secret' });
+		expect(JSON.parse(values.get(KvConst.SETTING))).toMatchObject(expected);
 		state.clear();
-		expect(await settingService.query(c)).toMatchObject({ gatewayEnabled: 1, gatewayHostname: 'mail.example.test' });
-		await settingService.set(c, { gatewayEnabled: 0 });
-		expect(await settingService.get(c)).toMatchObject({ gatewayEnabled: 0, gatewayHostname: 'mail.example.test' });
-	});
-	it('validates partial updates atomically and ignores no unrelated fields', async () => {
-		const { c, db } = fixture(); await settingService.refresh(c);
-		for (const patch of [{ gatewayEnabled: 1 }, { gatewayEnabled: '1' }, { gatewayEnabled: true }, { gatewayEnabled: null }, { gatewayEnabled: 2 }, { gatewayHostname: 'https://bad.example.test' }]) {
-			await expect(settingService.set(c, { ...patch, title: 'must not write' })).rejects.toThrow();
-			expect(db.sqlite.prepare('SELECT title,gateway_enabled FROM setting').get()).toMatchObject({ title: 'Synthetic site', gateway_enabled: 0 });
-		}
-		await settingService.set(c, { gatewayHostname: 'mail.example.test' });
-		await settingService.set(c, { gatewayEnabled: 1 });
-		await expect(settingService.set(c, { gatewayHostname: '' })).rejects.toThrow();
-		await settingService.set(c, { gatewayEnabled: 0, gatewayHostname: '' });
+		expect(await settingService.get(c)).toMatchObject(expected);
+		expect(await settingService.websiteConfig(c)).toMatchObject(expected);
+		await settingService.set(c, { gatewayImapHostname: 'imap2.example.test' }); expected.gatewayImapHostname = 'imap2.example.test';
+		expect(await settingService.get(c)).toMatchObject(expected);
+		await settingService.set(c, { gatewaySmtpHostname: 'smtp2.example.test' }); expected.gatewaySmtpHostname = 'smtp2.example.test';
 		await settingService.set(c, { title: 'Updated site' });
-		expect(db.sqlite.prepare('SELECT title,gateway_enabled,gateway_hostname FROM setting').get()).toMatchObject({ title: 'Updated site', gateway_enabled: 0, gateway_hostname: '' });
+		expect(await settingService.websiteConfig(c)).toMatchObject({ ...expected, title: 'Updated site' });
+		expect(JSON.parse(values.get(KvConst.SETTING))).toMatchObject(expected);
+		await settingService.set(c, { gatewayEnabled: 0 });
+		expect(await settingService.get(c)).toMatchObject({ ...expected, gatewayEnabled: 0 });
 	});
-	it('public websiteConfig explicitly exposes only safe fields and handles legacy KV', async () => {
-		const { c, values, state } = fixture(); await settingService.refresh(c);
-		const old = JSON.parse(values.get(KvConst.SETTING));
-		delete old.gatewayEnabled; delete old.gatewayHostname;
-		values.set(KvConst.SETTING, JSON.stringify(old)); state.clear();
+	it.each(['gatewayImapHostname', 'gatewaySmtpHostname'])('validates %s atomically and requires both hosts before enabling', async key => {
+		const { c, db } = fixture(); await settingService.refresh(c);
+		await settingService.set(c, { [key]: hosts[key] });
+		await expect(settingService.set(c, { gatewayEnabled: 1, title: 'must not write' })).rejects.toThrow();
+		for (const value of invalidHosts) await expect(settingService.set(c, { [key]: value, title: 'must not write' })).rejects.toThrow();
+		for (const gatewayEnabled of ['1', true, null, 2]) await expect(settingService.set(c, { gatewayEnabled, title: 'must not write' })).rejects.toThrow();
+		expect(db.sqlite.prepare('SELECT title,gateway_enabled FROM setting').get()).toEqual({ title: 'Synthetic site', gateway_enabled: 0 });
+		await settingService.set(c, { gatewayEnabled: 1, ...hosts });
+		await expect(settingService.set(c, { [key]: '' })).rejects.toThrow();
+		await settingService.set(c, { gatewayEnabled: 0, [key]: '' });
+		expect(await settingService.get(c)).toMatchObject({ gatewayEnabled: 0, [key]: '' });
+	});
+	it('rejects legacy-only/broad legacy writes without changing split, legacy DB data or other settings', async () => {
+		const { c, db } = fixture();
+		db.sqlite.exec("ALTER TABLE setting ADD COLUMN gateway_hostname TEXT NOT NULL DEFAULT 'old.example.test'");
+		await settingService.refresh(c);
+		await expect(settingService.set(c, { gatewayEnabled: 1, gatewayHostname: 'legacy.example.test' })).rejects.toThrow('no longer supported');
+		await settingService.set(c, { gatewayEnabled: 1, ...hosts });
+		await expect(settingService.set(c, { gatewayHostname: 'old-client.example.test', title: 'must not write' })).rejects.toThrow();
+		expect(db.sqlite.prepare('SELECT gateway_hostname,title FROM setting').get()).toEqual({ gateway_hostname: 'old.example.test', title: 'Synthetic site' });
+		expect(await settingService.get(c)).toMatchObject({ gatewayEnabled: 1, ...hosts });
+		expect(await settingService.get(c)).not.toHaveProperty('gatewayHostname');
+		safePublic(await settingService.websiteConfig(c));
+	});
+	it.each(['gatewayImapHostname', 'gatewaySmtpHostname'])('old KV and raw invalid %s fail closed consistently without losing stored switch', async key => {
+		const { c, values, state, db } = fixture(); await settingService.refresh(c);
+		const base = JSON.parse(values.get(KvConst.SETTING));
+		for (const value of [undefined, null, '', 'bad:993', 123]) {
+			const snapshot = { ...base, gatewayEnabled: 1, ...hosts, [key]: value, gatewayHostname: 'legacy.example.test' };
+			values.set(KvConst.SETTING, JSON.stringify(snapshot)); state.clear();
+			for (const read of [() => settingService.get(c), () => settingService.websiteConfig(c)]) {
+				const result = await read(); expect(result).toMatchObject({ gatewayEnabled: 0, [key]: '' }); expect(result).not.toHaveProperty('gatewayHostname');
+			}
+			expect((await settingService.query(c)).gatewayEnabled).toBe(1);
+			await expect(settingService.set(c, { gatewayEnabled: 1 })).rejects.toThrow();
+		}
+		values.set(KvConst.SETTING, JSON.stringify({ ...base, gatewayEnabled: 1, gatewayHostname: 'legacy.example.test' })); state.clear();
 		const result = await settingService.websiteConfig(c);
-		expect(result).toMatchObject({ gatewayEnabled: 0, gatewayHostname: '', title: 'Synthetic site' });
-		const forbidden = ['secretKey', 'smtpChannels', 'resendTokens', 's3SecretKey', 's3AccessKey', 'tgBotToken', 'webhookSecret', 'githubClientSecret', 'googleClientSecret', 'linuxdoClientSecret'];
-		for (const key of forbidden) expect(result).not.toHaveProperty(key);
-		expect(JSON.stringify(result)).not.toContain('synthetic-');
-		await settingService.set(c, { gatewayEnabled: 1, gatewayHostname: 'mail.example.test' });
-		expect(await settingService.websiteConfig(c)).toMatchObject({ gatewayEnabled: 1, gatewayHostname: 'mail.example.test' });
+		expect(result).toMatchObject({ gatewayEnabled: 0, gatewayImapHostname: '', gatewaySmtpHostname: '' }); safePublic(result);
+		db.sqlite.exec("UPDATE setting SET gateway_enabled=1,gateway_imap_hostname='bad:993',gateway_smtp_hostname='smtp.example.test'");
+		await settingService.refresh(c);
+		expect(await settingService.websiteConfig(c)).toMatchObject({ gatewayEnabled: 0, gatewayImapHostname: '' });
+		expect(JSON.parse(values.get(KvConst.SETTING))).toMatchObject({ gatewayEnabled: 1, gatewayImapHostname: 'bad:993' });
+		await expect(settingService.set(c, { gatewaySmtpHostname: 'smtp2.example.test' })).rejects.toThrow();
 	});
-	it('normalizes request-local stale cached settings too', async () => {
-		const { c, state } = fixture();
-		state.set('setting', { gatewayEnabled: 1, gatewayHostname: 'bad:993' });
-		expect(await settingService.query(c)).toEqual({ gatewayEnabled: 0, gatewayHostname: '' });
+	it('explicit off remains off when old stored-on settings receive the new host configuration', async () => {
+		const { c, db, values, state } = fixture();
+		db.sqlite.exec('UPDATE setting SET gateway_enabled=1');
+		await settingService.refresh(c);
+		expect(await settingService.get(c)).toMatchObject({ gatewayEnabled: 0, gatewayImapHostname: '', gatewaySmtpHostname: '' });
+		await settingService.set(c, { gatewayEnabled: 0, ...hosts });
+		expect(db.sqlite.prepare('SELECT gateway_enabled FROM setting').get()).toEqual({ gateway_enabled: 0 });
+		expect(JSON.parse(values.get(KvConst.SETTING))).toMatchObject({ gatewayEnabled: 0, ...hosts });
+		state.clear();
+		expect(await settingService.get(c)).toMatchObject({ gatewayEnabled: 0, ...hosts });
+		expect(await settingService.websiteConfig(c)).toMatchObject({ gatewayEnabled: 0, ...hosts });
 	});
-	it('keeps existing real security middleware boundaries for public, ordinary and admin callers', async () => {
+	it('public output explicitly allowlists only safe settings and masking never mutates source secrets', async () => {
+		const { c } = fixture(); await settingService.refresh(c);
+		await settingService.set(c, { gatewayEnabled: 1, ...hosts });
+		const result = await settingService.websiteConfig(c); safePublic(result);
+		expect(result).toMatchObject({ gatewayEnabled: 1, ...hosts, title: 'Synthetic site' });
+		expect((await settingService.query(c)).secretKey).toBe('synthetic-turnstile-secret');
+	});
+	it('keeps real security middleware boundaries for anonymous, ordinary and admin callers', async () => {
 		const { c, env, values } = fixture(); await settingService.refresh(c);
 		const publicResponse = await app.request('/setting/websiteConfig', {}, env);
-		expect((await publicResponse.json()).data).toMatchObject({ gatewayEnabled: 0, gatewayHostname: '' });
+		expect((await publicResponse.json()).data).toMatchObject({ gatewayEnabled: 0, gatewayImapHostname: '', gatewaySmtpHostname: '' });
 		const makeAuth = email => ({ tokens: [email], user: { userId: email, email }, refreshTime: new Date().toISOString() });
 		for (const email of ['ordinary@example.test', env.admin]) values.set(KvConst.AUTH_INFO + email, JSON.stringify(makeAuth(email)));
-		// Match the production generation constant without ever minting or using a real token.
 		const jwt = (await import('../../src/utils/jwt-utils.js')).default;
 		jwt.verifyToken = async (_c, token) => token ? { userId: token, token, gen: constant.AUTH_GEN } : null;
 		for (const path of ['/setting/query', '/setting/set']) {
-			const options = path.endsWith('/set') ? { method: 'PUT', body: JSON.stringify({ gatewayEnabled: 1, gatewayHostname: 'mail.example.test' }), headers: { 'Content-Type': 'application/json' } } : {};
-			const ordinary = await app.request(path, { ...options, headers: { ...options.headers, [constant.TOKEN_HEADER]: 'ordinary@example.test' } }, env);
-			expect((await ordinary.json()).code).toBe(403);
-			const admin = await app.request(path, { ...options, headers: { ...options.headers, [constant.TOKEN_HEADER]: env.admin } }, env);
-			expect((await admin.json()).code).toBe(200);
+			const options = path.endsWith('/set') ? { method: 'PUT', body: JSON.stringify({ gatewayEnabled: 1, ...hosts }), headers: { 'Content-Type': 'application/json' } } : {};
+			for (const token of [undefined, 'ordinary@example.test', env.admin]) {
+				const response = await app.request(path, { ...options, headers: { ...options.headers, ...(token ? { [constant.TOKEN_HEADER]: token } : {}) } }, env);
+				const result = await response.json();
+				if (token === env.admin) { expect(result.code).toBe(200); if (path.endsWith('/query')) expect(result.data).not.toHaveProperty('gatewayHostname'); }
+				else if (token) expect(result.code).toBe(403);
+				else expect(result.code).not.toBe(200);
+			}
 		}
-		expect(JSON.parse(values.get(KvConst.SETTING))).toMatchObject({ gatewayEnabled: 1, gatewayHostname: 'mail.example.test' });
+		expect(JSON.parse(values.get(KvConst.SETTING))).toMatchObject({ gatewayEnabled: 1, ...hosts });
 	});
 });
 
-describe('new additive gateway settings migration', () => {
-	it('fresh initializer schema has defaults and is compatible with repeated guarded upgrade', async () => {
-		const db = createSQLiteD1(); databases.push(db);
-		await dbInit.intDB({ env: { db } });
-		await applyGatewaySettingsMigration({ env: { db } });
-		await applyGatewaySettingsMigration({ env: { db } });
-		expect(db.sqlite.prepare('SELECT gateway_enabled,gateway_hostname FROM setting').get()).toMatchObject({ gateway_enabled: 0, gateway_hostname: '' });
+describe('independent additive 0003 migration', () => {
+	it('fresh init and entity fixture use empty NOT NULL defaults with no old host column', async () => {
+		const { db: entityDb } = fixture();
+		const db = createSQLiteD1(); databases.push(db); await dbInit.intDB({ env: { db } });
+		for (const source of [db, entityDb]) {
+			await applyGatewaySplitHostsMigration({ env: { db: source } }); await applyGatewaySplitHostsMigration({ env: { db: source } });
+			expect(source.sqlite.prepare('SELECT gateway_imap_hostname,gateway_smtp_hostname FROM setting').get()).toEqual({ gateway_imap_hostname: '', gateway_smtp_hostname: '' });
+			const columns = source.sqlite.prepare('PRAGMA table_info(setting)').all();
+			expect(columns.some(row => row.name === 'gateway_hostname')).toBe(false);
+			for (const row of columns.filter(row => row.name.endsWith('_hostname'))) { expect(row.type).toBe('TEXT'); expect(row.notnull).toBe(1); expect(row.dflt_value).toBe("''"); }
+		}
 	});
-	it('matches SQL to guarded canonical columns, preserves existing data and resumes partial application', async () => {
+	it('matches one-shot SQL, resumes partial upgrades and never backfills from existing legacy values', async () => {
+		const sql = readFileSync(new URL('../../migrations/0003_gateway_split_hosts.sql', import.meta.url), 'utf8');
+		expect(sql.split('\n').filter(line => !line.startsWith('--')).join('\n').trim()).toBe(GATEWAY_SPLIT_HOSTS_COLUMNS.map(column => column.sql).join('\n'));
+		for (const partial of [false, true]) {
+			const db = createSQLiteD1(); databases.push(db);
+			db.sqlite.exec("CREATE TABLE setting(title TEXT,gateway_enabled INTEGER,gateway_hostname TEXT); INSERT INTO setting VALUES('Synthetic',1,'legacy.example.test'); CREATE TABLE existing_metadata(id INTEGER); INSERT INTO existing_metadata VALUES(42)");
+			if (partial) { db.sqlite.exec(GATEWAY_SPLIT_HOSTS_COLUMNS[0].sql); db.sqlite.exec("UPDATE setting SET gateway_imap_hostname='imap.example.test'"); }
+			else db.sqlite.exec(sql);
+			await applyGatewaySplitHostsMigration({ env: { db } }); await applyGatewaySplitHostsMigration({ env: { db } });
+			expect(db.sqlite.prepare('SELECT * FROM setting').get()).toEqual({ title: 'Synthetic', gateway_enabled: 1, gateway_hostname: 'legacy.example.test', gateway_imap_hostname: partial ? 'imap.example.test' : '', gateway_smtp_hostname: '' });
+			expect(db.sqlite.prepare('SELECT * FROM existing_metadata').get()).toEqual({ id: 42 });
+			expect(() => db.sqlite.exec('UPDATE setting SET gateway_smtp_hostname=NULL')).toThrow();
+		}
+	});
+	it('reports missing table and actual D1 errors', async () => {
+		const db = createSQLiteD1(); databases.push(db);
+		await expect(applyGatewaySplitHostsMigration({ env: { db } })).rejects.toThrow('Legacy setting table');
+		await expect(applyGatewaySplitHostsMigration({ env: { db: { prepare: () => ({ all: async () => { throw new Error('Synthetic DB failure'); } }) } } })).rejects.toThrow('Synthetic DB failure');
+	});
+	it('preserves historical 0002 SQL/helper without invoking it during fresh init or 0003', async () => {
 		const sql = readFileSync(new URL('../../migrations/0002_gateway_settings.sql', import.meta.url), 'utf8');
 		expect(sql.split('\n').filter(line => !line.startsWith('--')).join('\n').trim()).toBe(GATEWAY_SETTINGS_COLUMNS.map(column => column.sql).join('\n'));
-		const db = createSQLiteD1(); databases.push(db);
-		db.sqlite.exec("CREATE TABLE setting(title TEXT, secret_key TEXT); INSERT INTO setting VALUES('Synthetic title','synthetic-marker'); CREATE TABLE existing_metadata(id INTEGER); INSERT INTO existing_metadata VALUES(42);");
-		db.sqlite.exec(GATEWAY_SETTINGS_COLUMNS[0].sql);
-		await applyGatewaySettingsMigration({ env: { db } });
-		db.sqlite.exec("UPDATE setting SET gateway_enabled=1,gateway_hostname='mail.example.test'");
-		await applyGatewaySettingsMigration({ env: { db } });
-		expect(db.sqlite.prepare('SELECT * FROM setting').get()).toMatchObject({ title: 'Synthetic title', secret_key: 'synthetic-marker', gateway_enabled: 1, gateway_hostname: 'mail.example.test' });
-		expect(db.sqlite.prepare('SELECT id FROM existing_metadata').get().id).toBe(42);
-	});
-	it('defaults disabled on existing rows, accepts standalone SQL once and rejects invalid switch values', () => {
-		const db = createSQLiteD1(); databases.push(db);
-		db.sqlite.exec("CREATE TABLE setting(title TEXT); INSERT INTO setting VALUES('Synthetic');");
-		db.sqlite.exec(readFileSync(new URL('../../migrations/0002_gateway_settings.sql', import.meta.url), 'utf8'));
-		expect(db.sqlite.prepare('SELECT gateway_enabled,gateway_hostname FROM setting').get()).toMatchObject({ gateway_enabled: 0, gateway_hostname: '' });
-		expect(() => db.sqlite.exec('UPDATE setting SET gateway_enabled=2')).toThrow();
-	});
-	it('fails loudly for missing legacy tables and does not hide D1 failures', async () => {
-		const db = createSQLiteD1(); databases.push(db);
-		await expect(applyGatewaySettingsMigration({ env: { db } })).rejects.toThrow('Legacy setting table');
-		await expect(applyGatewaySettingsMigration({ env: { db: { prepare: () => ({ all: async () => { throw new Error('Synthetic DB failure'); } }) } } })).rejects.toThrow('Synthetic DB failure');
+		const db = createSQLiteD1(); databases.push(db); db.sqlite.exec("CREATE TABLE setting(title TEXT); INSERT INTO setting VALUES('Synthetic')");
+		await applyGatewaySettingsMigration({ env: { db } }); await applyGatewaySettingsMigration({ env: { db } });
+		expect(db.sqlite.prepare('SELECT gateway_enabled,gateway_hostname FROM setting').get()).toEqual({ gateway_enabled: 0, gateway_hostname: '' });
 	});
 });
