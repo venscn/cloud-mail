@@ -79,7 +79,8 @@ const jwtUtils = {
 			return payload;
 
 		} catch (err) {
-			console.log(err)
+			// Probe errors are fixed-code only, including authentication failures.
+			if (!c.req?.path?.startsWith('/setting/gatewayConnectivity/')) console.log(err)
 			return null;
 		}
 	}

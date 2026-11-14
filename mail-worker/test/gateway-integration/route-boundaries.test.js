@@ -71,6 +71,18 @@ async function errorBody(response, status, protocol = true) {
 }
 
 describe('actual Worker dispatch and HTTP authorization boundaries', () => {
+	it('protects mail connectivity with real web middleware and exact admin identity', async () => {
+		const f = await setup();
+		f.env.admin = 'admin@example.test';
+		const log = vi.spyOn(console, 'log');
+		for (const [authorization, status] of [[undefined,401], [f.webJWT,403], [`Bearer ${f.session.session_token}`,401]]) {
+			const response = await f.call('/api/setting/gatewayConnectivity/imap', {method:'POST',authorization});
+			expect(response.status).toBe(status);
+			expect(response.headers.get('Cache-Control')).toBe('no-store');
+			expect((await response.json()).message).toBe(status === 401 ? 'SESSION_INVALID' : 'FORBIDDEN');
+		}
+		expect(log).not.toHaveBeenCalled();
+	});
 	it('serves public protocol capabilities without a web JWT or any KV access', async () => {
 		const f = await setup();
 		f.env.kv = { get() { throw new Error('Protocol dispatch must not use web KV'); } };

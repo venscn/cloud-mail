@@ -1,5 +1,4 @@
 import app from '../hono/hono.js';
-import { connect } from 'cloudflare:sockets';
 import { probeGateway } from '../service/gateway-connectivity.js';
 
 // Registered after the actual web JWT middleware, not the bearer gateway router.
@@ -21,6 +20,7 @@ app.post('/setting/gatewayConnectivity/:protocol', async c => {
 		if (!granted) { c.header('Retry-After','60'); return reply('RATE_LIMITED',429); }
 		const column = protocol === 'imap' ? 'gateway_imap_hostname' : 'gateway_smtp_hostname';
 		const row = await c.env.db.prepare(`SELECT ${column} AS hostname FROM setting LIMIT 1`).first();
+		const { connect } = await import('cloudflare:sockets');
 		const data = await probeGateway(protocol,row?.hostname,{connect, signal:c.req.raw.signal});
 		return c.json({code:200,message:'',data});
 	} catch { return reply('UNAVAILABLE',503); }

@@ -101,7 +101,9 @@ export async function probeGateway(protocol, rawHost, {connect, fetcher = fetch,
 			const end = buffer.indexOf('\r\n');
 			if (end >= 0) {
 				if (++lines > 64 || end > 2048) fail('LIMIT_EXCEEDED');
-				const value = buffer.slice(0,end); buffer = buffer.slice(end+2); return value;
+				const value = buffer.slice(0,end);
+				if (new TextEncoder().encode(value).byteLength > 2048) fail('LIMIT_EXCEEDED');
+				buffer = buffer.slice(end+2); return value;
 			}
 			if (buffer.length > 2048) fail('LIMIT_EXCEEDED');
 			const chunk = await wait(reader.read());
