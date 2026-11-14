@@ -1,4 +1,7 @@
+import gateway from './gateway-en.js'
+
 const en = {
+    ...gateway,
     inbox: 'Inbox',
     compose: 'Compose',
     drafts: 'Drafts',

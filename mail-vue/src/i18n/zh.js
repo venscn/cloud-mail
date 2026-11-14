@@ -1,4 +1,7 @@
+import gateway from './gateway-zh.js'
+
 const zh = {
+    ...gateway,
     inbox: '收件箱',
     compose: '撰写邮件',
     drafts: '草稿箱',

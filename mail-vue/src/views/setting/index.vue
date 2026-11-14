@@ -32,6 +32,7 @@
         </div>
       </div>
     </div>
+    <GatewaySettings class="gateway-section" />
     <div class="language">
       <div class="title">{{$t('language')}}</div>
       <div class="language-row setting-row">
@@ -91,6 +92,7 @@ import {useI18n} from "vue-i18n";
 import {useSettingStore} from "@/store/setting.js";
 import {useUiStore} from "@/store/ui.js";
 import ThemeSelector from "@/components/theme-selector/index.vue";
+import GatewaySettings from "@/components/gateway-settings/index.vue";
 
 const { t } = useI18n()
 const accountStore = useAccountStore()
@@ -293,6 +295,10 @@ function submitPwd() {
       }
 
     }
+  }
+
+  .gateway-section {
+    margin-bottom: 40px;
   }
 
   .preference-item,
