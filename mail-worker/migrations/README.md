@@ -1,4 +1,4 @@
-# Gateway v1: explicit D1 migration and raw-storage prerequisites
+# Gateway v1: explicit D1 metadata migration (relay only)
 
 These assets belong to the **matching Cloud Mail Worker source release**, not the separately released Go gateway binary. They do not provision or deploy anything on their own.
 
@@ -33,19 +33,20 @@ These assets belong to the **matching Cloud Mail Worker source release**, not th
 
 The migration uses `CREATE ... IF NOT EXISTS`, `INSERT OR IGNORE`, uniqueness constraints, and stable counters. Replaying this **same** v1 migration does not reset UIDs, UIDVALIDITY, revisions, raw mappings or credentials. Future schema changes need a new versioned migration; changing a `CREATE TRIGGER IF NOT EXISTS` body does not upgrade an already-created trigger.
 
-## R2 privacy and compatibility
+## Existing storage only; no new R2 prerequisite
 
-- The protocol gateway requires an R2 binding named `r2` with read/write access. Immutable MIME is stored under the reserved `private-gateway/` prefix, with byte length, SHA-256 and an authenticated per-account mapping in D1.
-- **That bucket must not expose these objects through an R2 public-development URL, public custom domain, permissive second Worker, CDN or object listing.** This release rejects reserved-prefix keys on Cloud Mail's public object/attachment routes, including multiply encoded/backslash/case variants. It cannot revoke a separate public R2 endpoint. Use a genuinely private binding; do not treat an unguessable key or the application's HTTP guard as bucket privacy.
-- Ordinary webmail receive remains compatible without this binding, without the gateway migration, and when an optional raw write fails. The existing legacy attachment storage still supports configured S3/R2/KV. Raw capture is best-effort for ordinary receive; failures are warned but do not strand the legacy message in its saving state. Do not switch a legacy S3/KV attachment store merely to enable this feature without auditing attachment availability.
-- If private R2 was unavailable for an earlier message, the original bytes were not retained. A later gateway read may deterministically reconstruct and freeze MIME from legacy content/attachments. It is labeled `raw_source: reconstructed` and `X-CMG-Reconstructed: yes`, **never** `received`. A fresh receive captured successfully is labeled `received` and preserves the exact inbound bytes.
-- Received/raw download limit is 25 MiB; APPEND and submission limit is 10 MiB. APPEND stores a mailbox instance only and never invokes a delivery provider.
+- The gateway does not create or store raw MIME objects. Do not enable R2 billing, create a bucket, or switch attachment backends for this feature. Existing email and attachment data remain in Cloud Mail's configured S3/KV/R2 abstraction.
+- Raw reads deterministically reconstruct MIME from existing email/attachment data. D1 stores only descriptor size/hash metadata (`legacy:<emailId>` is an internal descriptor identifier, not a raw object address). Every read checks the descriptor; changed content returns HTTP 409 rather than overwriting the hash.
+- The v1 serializer and reconstructed headers are a byte-stability contract. Future changes must not silently alter bytes for an existing UID or replace its descriptor to hide a mismatch; use an explicitly reviewed compatibility/version transition.
+- No inbound raw capture or submission raw-object write is performed. SMTP raw bytes exist only within the request lifecycle; the existing send pipeline, Sent persistence and attachment storage remain in use. D1 retains idempotency/envelope hashes and results, not a replayable raw message.
+- New APPEND (including drafts) and COPY return HTTP 501 / IMAP `NO [CANNOT]`. MOVE changes existing message metadata mappings. The sole existing-Sent APPEND ACK requires exact equality of both `payload_hash` and `envelope_hash`, never approximate matching; it neither stores a new copy nor sends mail.
+- Raw download limit is 25 MiB; submission/APPEND input limit is 10 MiB. Reconstruction does not promise recovery of original inbound MIME or full submitted raw bytes.
 
-## Historical projection and lazy freezing
+## Historical projection and lazy descriptors
 
 The migration creates durable per-account state, six special-use folders and live legacy-change triggers. Historical UID projection is a separate per-account SQL-only batch (500 rows). It does not read attachments, reconstruct MIME, or require R2, so one broken/oversized old message cannot keep an entire INBOX inaccessible. A large account reports bounded `SYNC_IN_PROGRESS` until subsequent authenticated calls have projected remaining rows. Existing status-6 receive/saving, status-7 failure and status-9 gateway-pending rows are excluded until their legitimate promotion.
 
-Old message MIME is frozen only when requested (for example raw read or COPY); a bounded D1 lease serializes reconstruction. Missing or oversized historical content is explicit per-message metadata (`raw_available: false`, `raw_error`, `size_is_estimate: true`, unknown size `0`), not fabricated original size and not account-wide readiness failure. Retryable failures may be cleared through the authenticated backfill maintenance route. Do not delete/change immutable raw objects manually.
+MIME is reconstructed only when requested for a supported read; a bounded D1 lease serializes descriptor establishment, not object storage. Missing or oversized historical content is explicit per-message metadata (`raw_available: false`, `raw_error`, `size_is_estimate: true`, unknown size `0`), not fabricated original size and not account-wide readiness failure. Retryable failures may be cleared through the authenticated backfill maintenance route. Do not change descriptor hashes to conceal a content mismatch.
 
 Snapshot cursors are signed, account/user bound and expire after seven days. Snapshot changes return 409; expired or pruned change cursors return 410 and require a fresh snapshot. Do not erase tombstones/change state to recover a single mail item or to save storage without the supported bounded pruning path.
 
@@ -59,4 +60,4 @@ npx vitest run --config vitest.gateway.config.js
 npx vitest run --config vitest.sender.config.js
 ```
 
-The core suite runs real local SQLite transactions/triggers; the sender/staging suite also validates workerd/D1-specific behavior with synthetic bindings. These checks are not proof of live permissions, R2 public-domain privacy, production quotas, an actual VPS/iOS login, or end-to-end external delivery. Those remain explicit operator acceptance tasks. **Do not run the package's default `test` script as an offline check: it includes deployment behavior.**
+The core suite runs real local SQLite transactions/triggers; the sender/staging suite also validates workerd/D1-specific behavior with synthetic bindings. These checks are not proof of live permissions, existing attachment availability, production quotas, an actual VPS/iOS login, or end-to-end external delivery. Those remain explicit operator acceptance tasks. **Do not run the package's default `test` script as an offline check: it includes deployment behavior.**
