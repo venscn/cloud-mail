@@ -33,6 +33,32 @@ These assets belong to the **matching Cloud Mail Worker source release**, not th
 
 The migration uses `CREATE ... IF NOT EXISTS`, `INSERT OR IGNORE`, uniqueness constraints, and stable counters. Replaying this **same** v1 migration does not reset UIDs, UIDVALIDITY, revisions, raw mappings or credentials. Future schema changes need a new versioned migration; changing a `CREATE TRIGGER IF NOT EXISTS` body does not upgrade an already-created trigger.
 
+## 0002: administrator-controlled client display settings
+
+[0002_gateway_settings.sql](./0002_gateway_settings.sql) adds only `setting.gateway_enabled` (integer 0/1, default 0) and `setting.gateway_hostname` (text, default empty). **Do not change or replay 0001 for this feature.** It does not change protocol authentication, existing application passwords, message storage or delivery. Turning the display switch off is not a network security boundary and deliberately does not disconnect an already deployed gateway.
+
+API fields are `gatewayEnabled` (numeric 0/1 only) and `gatewayHostname` (string). The existing permission-protected `/setting/set` and `/setting/query` routes remain in use; `/setting/websiteConfig` explicitly allowlists these two public values and no gateway secrets. The hostname is trimmed and lowercased; only ASCII DNS names with at least two labels, each 1–63 characters and at most 253 total, are accepted. Labels may contain letters, digits and internal hyphens; the last label must contain a letter. URLs, IP addresses, paths, ports, whitespace/control characters, Unicode and injection syntax are rejected. Empty hostname is allowed only while disabled. This validates syntax, not DNS/TLS/service availability.
+
+Before the matching Worker is deployed, an authorized operator must back up the actual target database and rehearse the additive upgrade against an isolated synthetic copy. Prefer the **per-column PRAGMA-guarded tool**, which resumes safely after a partial application and never resets existing setting values:
+
+```sh
+# Plan only: explicit config, explicit database and explicit local/remote are mandatory.
+node scripts/gateway-settings-migration.mjs --config '<OPERATOR_CONFIG>' --database '<D1_NAME_OR_ID>' --local
+# After reviewing the plan and target, apply to the isolated rehearsal.
+node scripts/gateway-settings-migration.mjs --config '<OPERATOR_CONFIG>' --database '<D1_NAME_OR_ID>' --local --apply
+# Only a separately approved controlled release substitutes --remote for --local.
+```
+
+The tool executes only `PRAGMA table_info(setting)` and the missing `ALTER TABLE` statements, then verifies both column names. It does not load configuration itself, select mail/credentials/settings values, update KV, deploy a Worker or implicitly choose production. Wrangler reads the explicitly supplied operator configuration. Run one migration operator at a time. Missing legacy tables or actual D1 failures fail loudly, not as duplicate-column success. [The SQL file](./0002_gateway_settings.sql) is an alternative for a migration runner tracking it exactly once; raw SQLite `ADD COLUMN` statements are **not** blindly replayable. Do not run all directory migrations merely to apply this change.
+
+The existing explicit secret-authorized initializer also calls [the guarded helper](../src/init/gateway-settings-migration.js), and the fresh installation schema includes both defaults. Ordinary startup/requests do not migrate. After columns exist, deploy the matching Worker, then save the desired configuration through the existing authorized administrator settings flow; its existing refresh writes D1 values into KV. A hostname may be saved with the switch disabled first. Until that save/refresh, legacy KV snapshots lacking either field remain disabled (no implicit backfill from a request). Verify public `websiteConfig` reports the expected safe fields and that non-admin requests still cannot edit/query administrator settings. Rollback keeps the additive columns; revert the Worker/UI, not database contents. Do not drop columns, reset settings, revoke passwords or touch gateway tables.
+
+Offline checks (no Wrangler/production config, no account/mail/password reads, no remote service):
+
+```sh
+node node_modules/vitest/vitest.mjs run --config vitest.settings.config.js
+```
+
 ## Existing storage only; no new R2 prerequisite
 
 - The gateway does not create or store raw MIME objects. Do not enable R2 billing, create a bucket, or switch attachment backends for this feature. Existing email and attachment data remain in Cloud Mail's configured S3/KV/R2 abstraction.
