@@ -1,0 +1,18 @@
+# Connectivity probe security boundary
+
+The administrator-only web endpoint probes only the currently saved independent IMAP or SMTP DNS hostname, on implicit-TLS ports 993 or 465. It reads only that column from the settings table. It never reads mailbox credentials, authenticates, sends mail or creates passwords. The display switch does not gate probes or protocol services.
+
+Production transport uses `connect({hostname, port}, {secureTransport:'on'})`. It intentionally does **not** claim IP pinning. Preflight queries A and AAAA through fixed HTTPS DoH, rejects non-public or mixed answers and fails closed. The subsequent original-hostname TLS connection relies on Cloudflare's production proxy for TLS validation and effective-destination private/localhost/Cloudflare address blocking, including if DNS changes after preflight. That platform dependency is not independently reproduced or proven by unit tests. TCP and TLS are reported together as one secure-connection phase. Connection/TLS errors are deliberately not classified as particular certificate expiry/chain/identity failures.
+
+Official evidence reviewed:
+- https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/ documents `secureTransport:'on'`, blocked Cloudflare ranges, and disallowed localhost/private network IPs under Troubleshooting.
+- https://developers.cloudflare.com/workers/reference/security-model/ describes hosted proxy mediation and explicitly warns that local workerd lacks production defenses. Its detailed HTTP example is not a complete TCP destination-policy specification.
+- https://github.com/cloudflare/workerd/blob/02aa64b3ed254bcd8230cc9020eae52dbec088eb/src/workerd/api/sockets.c%2B%2B shows the original address passed to proxy CONNECT with `useTls=true`. `startTls({expectedServerHostname})` is unsupported; it is not used.
+
+This is not an arbitrary-host scanner. Query parameters and request bodies are rejected. The genuine web JWT middleware runs first and an additional exact administrator identity check rejects users with delegated settings permission. All failures return fixed codes; no banner, address list or raw exception is logged/returned. One atomic D1 upsert grants at most one attempt per protocol per 60 seconds across isolates. The two-row cooldown table is created lazily on the first administrator probe; failure to create/read it denies the attempt. No new binding or manual migration is needed.
+
+A probe has one 10-second total deadline, request cancellation, 16 KiB DoH and protocol byte caps, 32 DNS answer cap, 64 protocol lines and 2048-byte line cap. Cleanup initiates reader cancellation, writer abort and socket close, and observes rejected `closed` promises. IMAP requires OK greeting, CAPABILITY completion and LOGOUT; SMTP requires 220, EHLO 250 and QUIT 221. Advertising AUTH does not cause AUTH to be attempted. A green result proves only these unauthenticated checks at that moment, not mailbox access, synchronization or mail delivery.
+
+Tests are offline Node synthetic tests. Documentation IPs are rejected by the production public-address policy; the protocol success harness explicitly injects a documentation-only address policy so no actual public target is needed. This injectable dependency is never populated from HTTP input. Platform rejection/rebinding tests simulate a rejected `opened` promise and verify fail-closed behavior, not Cloudflare's network implementation. No Node/Miniflare result should be presented as proof of production TLS/egress policy.
+
+Run from mail-worker: `node node_modules/vitest/vitest.mjs run --config vitest.connectivity.config.js`. Do not use the deploy-oriented default test task.

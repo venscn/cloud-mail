@@ -8,6 +8,11 @@ import { GatewayError, safeGatewayError } from '../gateway/errors.js';
 app.use('*', cors());
 
 app.onError((err, c) => {
+	if (c.req.path.startsWith('/setting/gatewayConnectivity/')) {
+		const status = err.name === 'BizError' && [401,403].includes(err.code) ? err.code : 503;
+		c.header('Cache-Control','no-store');
+		return c.json({code:status,message:status === 401 ? 'SESSION_INVALID' : status === 403 ? 'FORBIDDEN' : 'UNAVAILABLE',data:null},status);
+	}
 	// Management routes keep the legacy Result envelope, but never hide an
 	// authentication failure behind HTTP 200 or expose internal exception text.
 	if (c.req.path === '/gateway' || c.req.path.startsWith('/gateway/')) {

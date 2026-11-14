@@ -21,4 +21,5 @@ import '../api/public-api'
 import '../api/telegram-api'
 import '../api/oauth-api'
 import '../api/gateway-management-api.js';
+import '../api/gateway-connectivity-api.js';
 export default app;
