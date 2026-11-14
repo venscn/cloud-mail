@@ -49,6 +49,30 @@ test('personal setup lists each server once only inside client instructions and 
     assert.match(personal,/data-testid="one-time-password"/)
     assert.match(personal,/@click="confirmRevoke\(row\)"/)
 })
+test('personal warnings and sending explanations use practical wording without losing safety',async()=>{
+    const safetyKeys=['gatewayIntro','gatewayPermissionsHint','gatewayRevokeConfirm','gatewayOneTimeWarning','gatewayForbidden','gatewaySignInRequired','gatewayRequestFailed','gatewayImapSettings','gatewayIosStep3','gatewaySubmissionsHint','gatewayPartialWarning','gatewayNoRecipientDetails','gatewayUnknownWarning',
+        ...['queued','sending','sent','failed','unknown'].flatMap(state=>['gatewayState_'+state,'gatewayStateHint_'+state]),
+        ...['pending','sending','accepted','rejected','unknown'].map(state=>'gatewayRecipientState_'+state)]
+    const banned=/网关|渠道|后端|持久|对账|服务端|凭据|会话|真机验证|内部投递|\bgateway\b|\bchannel\b|\bbackend\b|durabl|reconcil|recoverable|session credentials|delivered internally|actual device/i
+    for(const labels of [zh,en]){
+        for(const key of safetyKeys)assert.doesNotMatch(labels[key],banned,key)
+        const source='<template><section>'+safetyKeys.map(key=>`<p>{{ $t('${key}', {name:'Phone'}) }}</p>`).join('')+'</section></template>'
+        const html=await render(source,{},labels)
+        assert.doesNotMatch(html,banned)
+        assert.doesNotMatch(html,/undefined|gatewayStateHint_|gatewayRecipientState_/)
+        const personalHtml=await render(personal,{...personalContext(),errorKey:'gatewaySignInRequired',createOutcomeUnknown:true,oneTimeSecret:{password:'synthetic-once',mailboxAddress:'alice@example.test'}},labels)
+        assert.ok(personalHtml.includes(labels.gatewaySignInRequired))
+        assert.ok(personalHtml.includes(labels.gatewayOneTimeWarning))
+        assert.ok(personalHtml.includes(labels.gatewayCreateUnknown))
+    }
+    assert.match(zh.gatewayRevokeConfirm,/立即失效.*已连接/);assert.match(en.gatewayRevokeConfirm,/immediately.*already connected/)
+    assert.match(zh.gatewayPermissionsHint,/原本没有的权限.*配额/);assert.match(en.gatewayPermissionsHint,/permissions you do not already have.*quotas/)
+    assert.match(zh.gatewayIosStep3,/证书警告.*不要忽略.*不要关闭 SSL/);assert.match(en.gatewayIosStep3,/Do not ignore certificate warnings or turn off SSL/)
+    assert.match(zh.gatewayPartialWarning,/逐一.*不要向所有人重复发送/);assert.match(en.gatewayPartialWarning,/each recipient.*Do not resend to everyone/)
+    assert.match(zh.gatewayStateHint_sent,/不代表对方已经收到/);assert.match(en.gatewayStateHint_sent,/does not mean the recipient has received/)
+    assert.match(zh.gatewayStateHint_unknown,/可能已经发出.*不要重复发送/);assert.match(en.gatewayStateHint_unknown,/may already have been sent.*do not send again/)
+    assert.match(zh.gatewayOneTimeWarning,/无法再次查看/);assert.match(en.gatewayOneTimeWarning,/permanently hides/)
+})
 test('system-settings technical instructions fail closed for unloaded, ordinary and malformed roles',async()=>{
     for(const user of [undefined,{}, {permKeys:[]},{permKeys:['mail.read','email:send']},{permKeys:'*'}]){
         assert.equal(canManageGatewaySettings(user),false)
