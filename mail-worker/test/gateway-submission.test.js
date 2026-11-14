@@ -117,17 +117,17 @@ describe('gateway MIME and SMTP envelope validation', () => {
 });
 
 describe('durable synchronous gateway submissions (synthetic D1)', () => {
-	it('persists original bytes before dispatch and returns sent only after all recipients and Sent are saved', async () => {
+	it('keeps MIME request-local and returns sent only after all recipients and Sent are saved', async () => {
 		const h = harness();
 		const result = await h.service.submit(context(), principal);
 		expect(result).toMatchObject({ state: 'sent', acceptance: 'channel_accepted', retryable: false, requires_reconciliation: false });
 		expect(result.recipients.every(item => item.state === 'accepted')).toBe(true);
-		expect(h.storage.putObj).toHaveBeenCalledOnce();
-		expect(h.storage.putObj.mock.calls[0][1]).toMatch(/^private-gateway\/submissions\/7\/.+\.eml$/);
-		expect(decoder.decode(h.storage.putObj.mock.calls[0][2])).toBe(mime());
-		expect(h.storage.putObj.mock.invocationCallOrder[0]).toBeLessThan(h.send.mock.invocationCallOrder[0]);
+		expect(h.storage.putObj).not.toHaveBeenCalled();
+		expect(decoder.decode(h.send.mock.calls[0][3].rawBytes)).toBe(mime());
 		const row = await new SubmissionRepository(context()).byId(principal, result.id);
 		expect(JSON.parse(row.result_json).email_ids).toEqual([42]);
+		expect(row.raw_key).toBe('');
+		expect(JSON.stringify(row)).not.toContain('Synthetic plain body');
 	});
 	it('never dispatches a duplicate POST and conflicts on the same key with changed bytes', async () => {
 		const h = harness();
@@ -140,20 +140,20 @@ describe('durable synchronous gateway submissions (synthetic D1)', () => {
 	it('has exactly one reserve owner under concurrent same-key inserts', async () => {
 		const repo = new SubmissionRepository(context());
 		const prepared = await prepare();
-		const options = { principal, key: 'racing-key', prepared, envelope, rawKey: 'private-gateway/test', result: {} };
+		const options = { principal, key: 'racing-key', prepared, envelope, result: {} };
 		const results = await Promise.all(Array.from({ length: 8 }, (_, i) => repo.reserve({ ...options, id: `race-${i}` })));
 		expect(results.filter(item => item.created)).toHaveLength(1);
 		expect(new Set(results.map(item => item.row.id)).size).toBe(1);
 	});
-	it('does not send when immutable raw storage fails', async () => {
+	it('does not require a raw store, even if an obsolete injected store would fail', async () => {
 		const storage = { putObj: vi.fn().mockRejectedValue(new Error('private upstream details')) };
 		const h = harness({ storage });
 		const result = await h.service.submit(context(), principal);
-		expect(result).toMatchObject({ state: 'failed', retryable: true, acceptance: null });
-		expect(h.send).not.toHaveBeenCalled();
-		expect(JSON.stringify(result)).not.toContain('private upstream');
+		expect(result).toMatchObject({ state: 'sent', retryable: false, acceptance: 'channel_accepted' });
+		expect(h.send).toHaveBeenCalledOnce();
+		expect(storage.putObj).not.toHaveBeenCalled();
 	});
-	it('rechecks revocation after raw persistence, before entering the business send path', async () => {
+	it('rechecks revocation after D1 reservation, before entering the business send path', async () => {
 		const authorize = vi.fn().mockRejectedValue(new GatewayError(401, 'SESSION_INVALID', 'Revoked'));
 		const h = harness({ authorize });
 		const result = await h.service.submit(context(), principal);
@@ -198,7 +198,7 @@ describe('durable synchronous gateway submissions (synthetic D1)', () => {
 	it('stale sending records become unknown for reconciliation, never an executable queue', async () => {
 		const repo = new SubmissionRepository(context());
 		const prepared = await prepare();
-		const reserved = await repo.reserve({ id: 'stale-id', principal, key: 'stale-key', prepared, envelope, rawKey: 'private-gateway/stale', result: {} });
+		const reserved = await repo.reserve({ id: 'stale-id', principal, key: 'stale-key', prepared, envelope, result: {} });
 		await env.SUBMISSION_TEST_DB.prepare('UPDATE gateway_submissions SET updated_at=? WHERE id=?').bind('2020-01-01T00:00:00.000Z', reserved.row.id).run();
 		const h = harness();
 		expect((await h.service.byKey(context(), principal, 'stale-key')).state).toBe('unknown');

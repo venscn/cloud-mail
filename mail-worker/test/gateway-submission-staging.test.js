@@ -7,7 +7,7 @@ import { createSubmissionService } from '../src/service/gateway-submission-servi
 import { applyGatewayMigration, DEFAULT_MAILBOXES } from '../src/gateway/schema';
 import { requireGatewayAuth } from '../src/gateway/auth';
 
-// Real legacy tables + real gateway migration, D1 transactions, raw persistence,
+// Real legacy tables + real gateway migration, D1 transactions, hash metadata,
 // saveSentEmail/saveSendAtt, internal delivery, cron and authorization guard. Only object/KV
 // storage and the external provider acceptance boundary are synthetic.
 const schema = `
@@ -72,8 +72,12 @@ function request(internal, { attachment = false } = {}) {
 	return recipient;
 }
 
-function actualSavingSend(internal, recipient) {
+function actualSavingSend(internal, recipient, beforeCommit = null) {
 	return vi.fn(async (context, params, _userId, execution) => {
+		if (beforeCommit) {
+			const commit = execution.commitEmailStatus;
+			execution.commitEmailStatus = async (...args) => { await beforeCommit(...args); return commit(...args); };
+		}
 		if (!internal) {
 			await execution.onAttempt([recipient], 'synthetic-provider');
 			await execution.onAccepted([recipient], 'synthetic-provider');
@@ -115,17 +119,16 @@ describe('gateway staging is not legacy receive recovery work', () => {
 		const recipient = request(internal);
 		const principal = await requireGatewayAuth(c, 'mail.send');
 		const arrived = deferred(), release = deferred();
-		const put = c.env.r2.put.bind(c.env.r2);
-		c.env.r2.put = async (key, value, options) => {
-			if (key.startsWith(`private-gateway/raw/${internal ? 2 : 1}/`)) { arrived.resolve(); await release.promise; }
-			return put(key, value, options);
-		};
-		const send = actualSavingSend(internal, recipient);
+		// Pause the synthetic send boundary, then execute the real guarded D1
+		// commit unchanged. No raw store exists to provide a pause anymore.
+		const send = actualSavingSend(internal, recipient, async (_emailId, accountId) => {
+			if (Number(accountId) === (internal ? 2 : 1)) { arrived.resolve(); await release.promise; }
+		});
 		const service = createSubmissionService({ send });
 		const pending = service.submit(c, principal);
 		pending.then(async value => {
 			try { await send.mock.results[0]?.value; } catch (error) { arrived.reject(error); return; }
-			arrived.reject(new Error(`Submission finished before the raw pause: ${value.state}`));
+			arrived.reject(new Error(`Submission finished before the guarded commit pause: ${value.state}`));
 		}, error => arrived.reject(error));
 		try {
 			await arrived.promise;
@@ -173,7 +176,7 @@ describe('gateway staging is not legacy receive recovery work', () => {
 		try {
 			const key = await arrived.promise;
 			// The real saveSendAtt has inserted its row, but its R2 write has not
-			// finished. This is earlier than the raw-MIME pauses above.
+			// finished. This is earlier than the guarded commits above.
 			expect(await db.prepare('SELECT count(*) AS n FROM email').first('n')).toBe(1);
 			expect(await db.prepare('SELECT email_id,account_id,user_id,key,filename,mime_type,size FROM attachments').first()).toEqual({
 				email_id: 1, account_id: 1, user_id: 1, key, filename: 'synthetic.txt', mime_type: 'text/plain', size: bytes(attachmentContent).length
@@ -213,9 +216,8 @@ describe('gateway staging is not legacy receive recovery work', () => {
 		} finally { release.resolve(); await pending; }
 	});
 
-	it.each([['external', false], ['internal', true]])('publishes actual %s Sent and delivery copies after authorized attachment and MIME saves', async (_label, internal) => {
+	it.each([['external', false], ['internal', true]])('publishes actual %s Sent and delivery copies after authorized attachment and hash-only Sent saves', async (_label, internal) => {
 		const recipient = request(internal, { attachment: true });
-		const original = new Uint8Array(await c.req.raw.clone().arrayBuffer());
 		const principal = await requireGatewayAuth(c, 'mail.send');
 		const db = c.env.db;
 		const send = actualSavingSend(internal, recipient);
@@ -255,15 +257,21 @@ describe('gateway staging is not legacy receive recovery work', () => {
 		expect(latest.map(row => row.emailId)).toEqual(internal ? [2] : []);
 
 		const projections = (await db.prepare(`SELECT m.email_id,m.account_id,m.uid,m.raw_error,m.size,b.name,r.source,r.object_key
-			FROM gateway_messages m JOIN gateway_mailboxes b ON b.id=m.mailbox_id JOIN gateway_raw r ON r.id=m.raw_id ORDER BY m.email_id`).all()).results;
+			FROM gateway_messages m JOIN gateway_mailboxes b ON b.id=m.mailbox_id LEFT JOIN gateway_raw r ON r.id=m.raw_id ORDER BY m.email_id`).all()).results;
 		expect(projections).toHaveLength(emails.length);
 		for (const [index, row] of emails.entries()) {
 			expect(projections[index]).toMatchObject({
-				email_id: row.email_id, account_id: row.account_id, uid: 1, raw_error: null, size: original.length,
-				name: row.type === emailConst.type.SEND ? 'Sent' : 'INBOX', source: 'submission'
+				email_id: row.email_id, account_id: row.account_id, uid: 1, raw_error: null, size: 0,
+				name: row.type === emailConst.type.SEND ? 'Sent' : 'INBOX', source: null, object_key: null
 			});
-			expect(c.env.r2.objects.get(projections[index].object_key)).toEqual(original);
 		}
+
+		expect(await db.prepare('SELECT count(*) n FROM gateway_raw').first('n')).toBe(0);
+		expect(await db.prepare('SELECT count(*) n FROM gateway_email_raw').first('n')).toBe(0);
+		expect(await db.prepare('SELECT raw_key FROM gateway_submissions').first('raw_key')).toBe('');
+		expect([...c.env.r2.objects.keys()].every(key => key.startsWith('attachments/'))).toBe(true);
+		const fingerprint = await db.prepare('SELECT payload_hash,content_hash,envelope_hash FROM gateway_sent_copies').first();
+		for (const hash of Object.values(fingerprint)) expect(hash).toMatch(/^[a-f0-9]{64}$/);
 
 		await emailService.completeReceiveAll(c);
 		expect((await db.prepare('SELECT email_id,account_id,user_id,type,status FROM email ORDER BY email_id').all()).results).toEqual(emails);
@@ -272,6 +280,27 @@ describe('gateway staging is not legacy receive recovery work', () => {
 		expect(send).toHaveBeenCalledTimes(1);
 		expect(await db.prepare('SELECT count(*) AS n FROM gateway_messages').first('n')).toBe(emails.length);
 		expect(await db.prepare('SELECT count(*) AS n FROM attachments').first('n')).toBe(emails.length);
+	});
+
+	it.each([[false, false], [true, false], [false, true], [true, true]])('sends internal=%s attachment=%s without R2 using only existing KV attachment storage', async (internal, attachment) => {
+		delete c.env.r2;
+		const recipient = request(internal, { attachment });
+		const principal = await requireGatewayAuth(c, 'mail.send');
+		const send = actualSavingSend(internal, recipient);
+		const service = createSubmissionService({ send });
+		const result = await service.submit(c, principal);
+		expect(result).toMatchObject({ state: 'sent', acceptance: 'channel_accepted', retryable: false });
+		await expect(send.mock.results[0].value).resolves.toBeUndefined();
+		const objectWrites = c.env.kv.put.mock.calls.filter(([key]) => key.startsWith('attachments/'));
+		expect(objectWrites).toHaveLength(attachment ? 1 : 0);
+		if (attachment) expect(objectWrites[0][1]).toEqual(bytes(attachmentContent));
+		expect(c.env.kv.put.mock.calls.some(([key]) => key.startsWith('private-gateway/'))).toBe(false);
+		expect(await c.env.db.prepare('SELECT count(*) n FROM gateway_raw').first('n')).toBe(0);
+		expect(await c.env.db.prepare('SELECT count(*) n FROM gateway_email_raw').first('n')).toBe(0);
+		expect(await c.env.db.prepare('SELECT count(*) n FROM gateway_sent_copies').first('n')).toBe(1);
+		request(internal, { attachment });
+		expect(await service.submit(c, principal)).toEqual(result);
+		expect(send).toHaveBeenCalledOnce();
 	});
 
 	it('still recovers ordinary status-6 receive rows without adopting gateway status-9 rows', async () => {
