@@ -5,9 +5,35 @@ import app from '../../src/api/gateway-api.js';
 import { createCredential, revokeCredential } from '../../src/gateway/auth.js';
 import { createSyntheticEnvironment } from '../gateway-core/sqlite-adapter.js';
 
+// Existing attachment KV adapter only: deliberately no R2 binding or MIME store.
+export async function createRelayEnvironment() {
+	const env = await createSyntheticEnvironment();
+	delete env.r2;
+	const objects = new Map([['setting:', { value: JSON.stringify({ emailPrefixFilter: '' }) }]]);
+	env.kv = {
+		async get(key, options) {
+			const value = objects.get(key)?.value ?? null;
+			return options?.type === 'json' && value ? JSON.parse(value) : value;
+		},
+		async put(key, value, options = {}) {
+			if (key !== 'setting:' && !key.startsWith('attachments/')) throw new Error('Unexpected non-attachment persistence');
+			objects.set(key, { value, metadata: options.metadata });
+		},
+		async getWithMetadata(key) { const object = objects.get(key); return { value: object?.value ?? null, metadata: object?.metadata }; },
+		async delete(key) { objects.delete(key); }
+	};
+	env.integrationObjects = objects;
+	return env;
+}
+
 export async function startFixture({ mode = 'accepted', runCron } = {}) {
 	if (mode === 'pause-commit' && typeof runCron !== 'function') throw new Error('Pending isolation requires the real legacy cron');
-	const env = await createSyntheticEnvironment();
+	const env = await createRelayEnvironment();
+	// Seed historical structured mail, not a new APPEND or a stored raw MIME.
+	env.db.sqlite.prepare(`INSERT INTO email(account_id,user_id,type,status,unread,send_email,to_email,subject,text,content,message_id,create_time)
+	 VALUES(1,1,0,0,0,'alice@example.test','bob@destination.test','Synthetic legacy','Synthetic UTF-8 雪\n.dot-stuffing\n..two-dots\n','<p>Synthetic HTML 雪</p>','<synthetic-legacy@example.test>','2026-11-10 12:00:00')`).run();
+	env.db.sqlite.prepare(`INSERT INTO attachments(email_id,account_id,user_id,key,filename,mime_type,size,type) VALUES(1,1,1,'attachments/legacy.bin','synthetic.bin','application/octet-stream',6,0)`).run();
+	await env.kv.put('attachments/legacy.bin', Uint8Array.from([0,1,2,3,255,254]));
 	env.integration = { mode, calls: [], pendingChecks: [] };
 	const reachedPending = Promise.withResolvers();
 	const releaseCommit = Promise.withResolvers();
@@ -15,7 +41,7 @@ export async function startFixture({ mode = 'accepted', runCron } = {}) {
 		env.integration.beforeSentCommit = async (context, emailId) => {
 			const status = () => env.db.sqlite.prepare('SELECT status FROM email WHERE email_id=?').get(emailId).status;
 			const before = status();
-			// Actual completeReceiveAll, after real raw/ledger persistence but
+			// Actual completeReceiveAll, after real attachment/ledger persistence but
 			// before the real guarded finalization. IMAP probes this interval.
 			await runCron(context);
 			env.integration.pendingChecks.push({ before, after: status() });

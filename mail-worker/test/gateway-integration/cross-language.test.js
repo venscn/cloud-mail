@@ -58,6 +58,13 @@ async function runGo(testName, value) {
 		});
 	});
 	expect(value.adapterFailures(), 'Node HTTP adapter exceptions').toBe(0);
+	expect(value.env).not.toHaveProperty('r2');
+	for (const row of value.env.db.sqlite.prepare('SELECT object_key,source FROM gateway_raw').all()) {
+		expect(row.object_key).toMatch(/^legacy:[1-9]\d*$/);
+		expect(row.source).toBe('reconstructed');
+	}
+	for (const key of value.env.integrationObjects.keys()) expect(key === 'setting:' || key.startsWith('attachments/')).toBe(true);
+	for (const row of submissions(value)) expect(row.raw_key).toBe('');
 }
 
 function submissions(value) {
@@ -75,7 +82,7 @@ function expectDurableDispatch(value, count) {
 	}
 }
 
-describe('real Go TLS protocols → actual Worker Hono API + auth + SQLite/R2', () => {
+describe('real Go TLS protocols → actual Worker Hono API + auth + SQLite/existing KV (no R2)', () => {
 	it('validates TLS trust, real application passwords, scopes and mailbox bootstrap', async () => {
 		const value = await fixture();
 		await runGo('TestCloudTLSAndAuth', value);
@@ -83,7 +90,7 @@ describe('real Go TLS protocols → actual Worker Hono API + auth + SQLite/R2', 
 		expectDurableDispatch(value, 0);
 	});
 
-	it('preserves UID, flags and exact MIME across reconnect/server restart, COPY/MOVE and Sent APPEND', async () => {
+	it('preserves reconstructed MIME, UID and flags across restart/MOVE; rejects new APPEND/COPY', async () => {
 		const value = await fixture();
 		await runGo('TestCloudIMAPLifecycle', value);
 		expectDurableDispatch(value, 0);
@@ -135,7 +142,7 @@ describe('real Go TLS protocols → actual Worker Hono API + auth + SQLite/R2', 
 		expect(rows).toHaveLength(1);
 		expect(rows[0].state).toBe('unknown');
 		expect(rows[0].phase).toBe('reconcile_required');
-		expect(value.env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM email').get().n).toBe(0);
+		expect(value.env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM email').get().n).toBe(1);
 		expect(value.env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM gateway_sent_copies').get().n).toBe(0);
 	});
 });

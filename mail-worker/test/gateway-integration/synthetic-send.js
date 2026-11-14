@@ -1,9 +1,10 @@
 // The sole business dependency replaced by this integration suite. No external
-// provider is contacted. Auth, MIME validation, durable submission state, raw
-// storage, mutation guards and IMAP mailbox materialization remain production code.
+// provider is contacted. Auth, MIME validation, durable submission state, reconstruction,
+// mutation guards and IMAP mailbox materialization remain production code.
 import { createHash } from 'node:crypto';
 import { recordSentCopy } from '../../src/gateway/raw.js';
 import { emailConst } from '../../src/const/entity-const.js';
+import attService from '../../src/service/att-service.js';
 
 export async function syntheticSend(c, params, userId, execution) {
 	if (execution?.kind !== 'gateway-submission') throw new Error('Expected real submission execution hooks');
@@ -19,8 +20,9 @@ export async function syntheticSend(c, params, userId, execution) {
 		recipients[0], params.subject || '', params.text || '', params.content || '', execution.messageId,
 		JSON.stringify(execution.visibleTo), JSON.stringify(execution.visibleCc), JSON.stringify(recipients.filter(address => !execution.visibleTo.includes(address) && !execution.visibleCc.includes(address))));
 	const emailId = Number(saved.lastInsertRowid);
+	if (params.attachments?.length) await attService.saveSendAtt(c, params.attachments, userId, params.accountId, emailId);
 	// Mirror saveSentEmail's gateway-only persistence boundary with the actual
-	// raw/Sent ledger helper, rather than fabricating a successful API response.
+	// hash-only Sent ledger and existing attachment service, never a raw MIME put.
 	await recordSentCopy(c, { emailId, accountId: String(params.accountId), bytes: execution.rawBytes,
 		envelope: execution.envelope, submissionId: execution.id });
 	await execution.onSentSaved(emailId);

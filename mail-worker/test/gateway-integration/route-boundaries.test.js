@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Dormant external transport entry points fail closed. Routing, JWT/KV web
-// authentication, gateway credentials, SQLite/R2 and every handler are real.
+// authentication, gateway credentials, SQLite and every handler are real.
 vi.mock('worker-mailer', () => ({
 	WorkerMailer: class { constructor() { throw new Error('External SMTP is forbidden in routing tests'); } },
 	encodeHeader() { throw new Error('External SMTP serialization is outside this fixture'); }
@@ -11,7 +11,7 @@ import worker from '../../src/index.js';
 import jwtUtils from '../../src/utils/jwt-utils.js';
 import constant from '../../src/const/constant.js';
 import { createCredential } from '../../src/gateway/auth.js';
-import { createSyntheticEnvironment } from '../gateway-core/sqlite-adapter.js';
+import { createRelayEnvironment } from './fixture.js';
 
 const environments = [];
 afterEach(() => {
@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 async function setup() {
-	const env = await createSyntheticEnvironment();
+	const env = await createRelayEnvironment();
 	environments.push(env);
 	env.jwt_secret = 'synthetic-jwt-signing-key-never-for-production';
 	const webSessions = new Map();
@@ -79,6 +79,24 @@ describe('actual Worker dispatch and HTTP authorization boundaries', () => {
 		expect(response.headers.get('Cache-Control')).toBe('no-store');
 		expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
 		expect(await response.json()).toMatchObject({ data: { version: 1, max_recipients: 50, page_size: 200 } });
+	});
+
+	it('explicitly refuses new APPEND and COPY with no R2 binding or stored MIME', async () => {
+		const f = await setup();
+		expect(f.env).not.toHaveProperty('r2');
+		const authorization = `Bearer ${f.session.session_token}`;
+		const listed = await (await f.call('/api/gateway/v1/mailboxes', { authorization })).json();
+		const inbox = listed.data.mailboxes.find(mailbox => mailbox.name === 'INBOX');
+		const append = await f.call(`/api/gateway/v1/mailboxes/${inbox.id}/messages`, {
+			method: 'POST', authorization, headers: { 'Content-Type': 'message/rfc822', 'Idempotency-Key': 'synthetic-new-append' },
+			body: 'From: alice@example.test\r\nTo: bob@example.test\r\n\r\nSynthetic only\r\n'
+		});
+		expect(await errorBody(append, 501)).toMatchObject({ error: { code: 'APPEND_UNSUPPORTED', retryable: false } });
+		const copy = await f.call(`/api/gateway/v1/mailboxes/${inbox.id}/copy`, {
+			method: 'POST', authorization, json: { uids: [1], destination_id: String(inbox.id) }
+		});
+		expect(await errorBody(copy, 501)).toMatchObject({ error: { code: 'COPY_UNSUPPORTED', retryable: false } });
+		expect(f.env.db.sqlite.prepare('SELECT COUNT(*) AS n FROM gateway_raw').get().n).toBe(0);
 	});
 
 	it('rejects plaintext remote protocol requests before exposing capabilities', async () => {
