@@ -12,7 +12,6 @@ import userService from '../service/user-service';
 import telegramService from '../service/telegram-service';
 import aiService from '../service/ai-service';
 import webhookService from '../service/webhook-service';
-import { captureReceivedRaw } from '../gateway/raw.js';
 import { MAX_RAW_MESSAGE_BYTES, readBounded } from '../gateway/validation.js';
 
 export async function email(message, env, ctx) {
@@ -160,10 +159,6 @@ export async function email(message, env, ctx) {
 			console.error(e);
 		}
 
-		// Capture exact bytes before projection when the optional gateway storage is
-		// ready. A pre-migration/S3/KV-only deployment must still receive web mail;
-		// an uncaptured message is explicitly reconstructed on a later gateway read.
-		await captureReceivedRaw({ env }, { emailId: emailRow.emailId, accountId: emailRow.accountId, expectedUserId: emailRow.userId, bytes: rawBytes });
 		emailRow = await emailService.completeReceive({ env }, account ? emailConst.status.RECEIVE : emailConst.status.NOONE, emailRow.emailId);
 
 

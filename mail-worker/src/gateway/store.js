@@ -3,7 +3,7 @@ import { mutationGuard, requireDeletionPermission } from './auth.js';
 import { defaultsFor, MAX_UID } from './schema.js';
 import { accountState, assertRevision, signCursor, verifyCursor, CURSOR_TTL_MS } from './cursors.js';
 import { flagsJSON, flagsMask, id, uid, uidSet, mailboxName, pageLimit, placeholders, sha256, internalDate, idempotencyKey, readBounded, MAX_MESSAGE_BYTES } from './validation.js';
-import { persistRaw, freezeLegacyEmail, rawObjectResponse, sentFingerprints } from './raw.js';
+import { freezeLegacyEmail, rawObjectResponse, sentFingerprints } from './raw.js';
 
 export const BACKFILL_BATCH = 500;
 const visibleLegacy = `e.account_id=? AND e.user_id=? AND e.is_del=0 AND e.status NOT IN(6,7,9)
@@ -225,22 +225,17 @@ export async function expunge(c, principal, mailboxId, value) {
 	return { uids: messages.map(m => m.uid) };
 }
 export async function copyMove(c, principal, mailboxId, value, move) {
+	if (!move) fail(501, 'COPY_UNSUPPORTED', 'Creating independent mail copies is outside relay mode');
 	const uids = uidSet(value.uids);
 	if (move) requireDeletionPermission(principal);
 	const source = await ownedMailbox(c, principal, mailboxId);
 	const destination = await ownedMailbox(c, principal, id(value.destination_id));
 	if (source.id === destination.id) fail(400, 'SAME_MAILBOX', 'Source and destination mailboxes must differ');
-	let messages = await selectedMessages(c, principal, source, uids);
-	for (const message of messages) {
-		if (message.raw_id) continue;
-		if (message.raw_error === 'RAW_TOO_LARGE') fail(413, 'RAW_TOO_LARGE', 'Historical MIME exceeds the raw read limit');
-		if (!message.email_id) fail(503, 'RAW_UNAVAILABLE', 'Raw message is unavailable', true);
-		await freezeLegacyEmail(c, message.email_id, principal.accountId);
-	}
-	// Freeze can add a revision. Read the guarded version AFTER all R2 work.
+	// MOVE changes only the existing message's mailbox mapping. Do not download
+	// attachments or reconstruct MIME merely to move a message.
 	const state = await accountState(c, principal);
-	messages = await selectedMessages(c, principal, source, uids);
-	if (messages.some(m => !m.raw_id)) fail(503, 'RAW_UNAVAILABLE', 'Raw message is unavailable', true);
+	const messages = await selectedMessages(c, principal, source, uids);
+	if (messages.some(m => !m.email_id)) fail(501, 'MOVE_UNSUPPORTED', 'Relay mode requires an existing Cloud Mail message');
 	const currentDestination = await ownedMailbox(c, principal, String(destination.id));
 	const guard = mutationGuard(c, principal, { revision: state.revision, deletion: move, mailboxId: destination.id, allocations: messages.length });
 	const statements = [guard.start];
@@ -284,9 +279,9 @@ export async function append(c, principal, mailboxId) {
 		const fingerprint = await sentFingerprints(bytes);
 		sentCopy = await c.env.db.prepare(`SELECT s.submission_id AS id,m.uid FROM gateway_sent_copies s JOIN gateway_messages m ON m.email_id=s.email_id
  WHERE s.account_id=? AND m.account_id=? AND m.mailbox_id=? AND s.consumed_at IS NULL AND s.created_at>?
- AND s.envelope_hash=? AND (s.payload_hash=? OR s.content_hash=?) ORDER BY s.created_at LIMIT 1`).bind(principal.accountId, principal.accountId, mailbox.id, Date.now() - 3600000, fingerprint.envelopeHash, fingerprint.payloadHash, fingerprint.contentHash).first();
+ AND s.envelope_hash=? AND s.payload_hash=? ORDER BY s.created_at LIMIT 1`).bind(principal.accountId, principal.accountId, mailbox.id, Date.now() - 3600000, fingerprint.envelopeHash, fingerprint.payloadHash).first();
 	}
-	const raw = sentCopy ? null : await persistRaw(c, { accountId: principal.accountId, bytes, source: 'append' });
+	if (!sentCopy) fail(501, 'APPEND_UNSUPPORTED', 'Relay mode can acknowledge an existing Sent copy but does not create new MIME storage');
 	const state = await accountState(c, principal);
 	const currentMailbox = await ownedMailbox(c, principal, String(mailbox.id));
 	const destinationUid = sentCopy ? sentCopy.uid : currentMailbox.uid_next;
@@ -304,8 +299,7 @@ export async function append(c, principal, mailboxId) {
 		statements.push(c.env.db.prepare('UPDATE gateway_messages SET flags=flags | ? WHERE mailbox_id=? AND uid=? AND account_id=?').bind(mask, mailbox.id, destinationUid, principal.accountId));
 		// Serializes one-time consumption even when the requested flags were unchanged.
 		statements.push(c.env.db.prepare('UPDATE gateway_accounts SET revision=revision+1 WHERE account_id=?').bind(principal.accountId));
-	} else statements.push(c.env.db.prepare(`INSERT INTO gateway_messages(id,account_id,mailbox_id,uid,raw_id,size,flags,internal_date)
- VALUES(?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), principal.accountId, mailbox.id, destinationUid, raw.id, raw.size, mask, date));
+	}
 	statements.push(c.env.db.prepare(`INSERT INTO gateway_appends(account_id,idempotency_key,request_hash,mailbox_id,uid,created_at)
  VALUES(?,?,?,?,?,?)`).bind(principal.accountId, key, requestHash, mailbox.id, destinationUid, Date.now()), guard.end);
 	await c.env.db.batch(statements);

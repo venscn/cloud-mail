@@ -5,54 +5,35 @@ import { MAX_MESSAGE_BYTES, MAX_RAW_MESSAGE_BYTES, readBounded, sha256 } from '.
 
 export const PRIVATE_PREFIX = 'private-gateway/';
 const encoder = new TextEncoder();
-const objectStore = c => {
-	if (!c.env.r2) fail(503, 'RAW_STORAGE_UNAVAILABLE', 'A private R2 binding is required', true);
-	return c.env.r2;
-};
+// Relay mode never persists another MIME copy. Existing mail/attachment storage
+// remains authoritative; only reconstruction digests and sizes are recorded.
+export async function persistRaw() {
+	fail(501, 'APPEND_UNSUPPORTED', 'Saving new MIME copies is outside relay mode');
+}
+export async function captureReceivedRaw() { return false; }
 
-export async function persistRaw(c, { accountId, bytes, source }) {
+export async function recordRawForEmail(c, { emailId, accountId }) {
 	await ensureGatewaySchema(c);
-	if (!(bytes instanceof Uint8Array) || !bytes.byteLength || bytes.byteLength > (['append', 'submission'].includes(source) ? MAX_MESSAGE_BYTES : MAX_RAW_MESSAGE_BYTES)) fail(413, 'MESSAGE_TOO_LARGE', 'MIME exceeds the size limit');
-	if (!['received', 'submission', 'append', 'reconstructed'].includes(source)) throw new Error('Invalid internal raw source');
+	const email = await c.env.db.prepare(`SELECT e.* FROM email e JOIN account a ON a.account_id=e.account_id AND a.user_id=e.user_id
+ WHERE e.email_id=? AND e.account_id=? AND e.is_del=0 AND e.status NOT IN(6,7,9) AND a.is_del=0`).bind(emailId, accountId).first();
+	if (!email) notFound();
+	const bytes = await reconstructLegacy(c, email);
 	const hash = await sha256(bytes);
-	const rawId = `${accountId}:${hash}:${source}`;
-	const key = `${PRIVATE_PREFIX}raw/${accountId}/${hash}.eml`;
-	const existing = await c.env.db.prepare('SELECT * FROM gateway_raw WHERE id=? AND account_id=?').bind(rawId, accountId).first();
-	if (existing) return existing;
-	// Content-addressed object names are immutable: concurrent writes contain identical bytes.
-	await objectStore(c).put(key, bytes, { sha256: hash, customMetadata: { sha256: hash }, httpMetadata: { contentType: 'message/rfc822', cacheControl: 'private, no-store' } });
-	await c.env.db.prepare(`INSERT OR IGNORE INTO gateway_raw(id,account_id,object_key,size,sha256,source,created_at) VALUES(?,?,?,?,?,?,?)`).bind(rawId, accountId, key, bytes.byteLength, hash, source, Date.now()).run();
-	return { id: rawId, account_id: Number(accountId), object_key: key, size: bytes.byteLength, sha256: hash, source };
-}
-
-// Ordinary web receive must remain available on pre-migration and S3/KV-only
-// installations. Gateway MIME capture is an additive best-effort enhancement:
-// missing capture is later disclosed as reconstructed, never as original MIME.
-export async function captureReceivedRaw(c, message) {
-	if (!c.env.r2?.put || !c.env.r2?.get) return false;
-	try {
-		await ensureGatewaySchema(c);
-		await recordRawForEmail(c, { ...message, source: 'received' });
-		return true;
-	} catch {
-		// Do not print MIME, object URLs, account data or binding error details.
-		console.warn('Gateway original MIME capture unavailable; ordinary receive continues');
-		return false;
-	}
-}
-
-export async function recordRawForEmail(c, { emailId, accountId, bytes, source = 'received', expectedUserId = null }) {
 	const existing = await c.env.db.prepare(`SELECT r.* FROM gateway_email_raw e JOIN gateway_raw r ON r.id=e.raw_id WHERE e.email_id=? AND e.account_id=?`).bind(emailId, accountId).first();
 	if (existing) {
-		if (existing.sha256 !== await sha256(bytes)) fail(409, 'RAW_ALREADY_FROZEN', 'The immutable message has already been frozen');
+		if (existing.sha256 !== hash) fail(409, 'MESSAGE_CHANGED', 'Existing message content changed; relay cannot return different bytes for the same UID');
 		return existing;
 	}
-	const raw = await persistRaw(c, { accountId, bytes, source });
+	const rawId = `${accountId}:${emailId}:${hash}:reconstructed`;
+	// No content bytes, object uploads or new storage binding: metadata only.
+	await c.env.db.prepare(`INSERT OR IGNORE INTO gateway_raw(id,account_id,object_key,size,sha256,source,created_at) VALUES(?,?,?,?,?,'reconstructed',?)`)
+		.bind(rawId, accountId, `legacy:${emailId}`, bytes.byteLength, hash, Date.now()).run();
 	await c.env.db.prepare(`INSERT OR IGNORE INTO gateway_email_raw(email_id,account_id,raw_id)
- SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM email WHERE email_id=? AND account_id=? AND (? IS NULL OR user_id=?))`).bind(emailId, accountId, raw.id, emailId, accountId, expectedUserId, expectedUserId).run();
+ SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM email WHERE email_id=? AND account_id=? AND user_id=? AND is_del=0 AND status NOT IN(6,7,9))`)
+		.bind(emailId, accountId, rawId, emailId, accountId, email.user_id).run();
 	const frozen = await c.env.db.prepare(`SELECT r.* FROM gateway_email_raw e JOIN gateway_raw r ON r.id=e.raw_id WHERE e.email_id=? AND e.account_id=?`).bind(emailId, accountId).first();
 	if (!frozen) notFound();
-	if (frozen.sha256 !== raw.sha256) fail(409, 'RAW_ALREADY_FROZEN', 'The immutable message has already been frozen');
+	if (frozen.sha256 !== hash) fail(409, 'MESSAGE_CHANGED', 'Existing message content changed; relay cannot return different bytes for the same UID');
 	return frozen;
 }
 
@@ -92,14 +73,23 @@ const base64Body = value => toBase64(typeof value === 'string' ? encoder.encode(
 const part = (type, content, headers = []) => [`Content-Type: ${type}`, 'Content-Transfer-Encoding: base64', ...headers, '', base64Body(content)].join('\r\n');
 
 async function legacyObject(c, key) {
-	// Reuse the configured legacy S3/R2/KV abstraction; new private MIME always uses R2.
+	// Read only through the already configured attachment storage abstraction.
 	const { default: service } = await import('../service/r2-service.js');
 	const object = await service.getObj(c, key);
 	if (!object) fail(503, 'LEGACY_ATTACHMENT_MISSING', 'A historical attachment is unavailable', true);
 	return readBounded(object.body, MAX_RAW_MESSAGE_BYTES);
 }
 
+let reconstructionActive = false;
 export async function reconstructLegacy(c, email, objectReader = legacyObject) {
+	// A relay does not retain MIME blobs. Bound each isolate's reconstruction
+	// working set instead of allowing parallel base64 copies of large messages.
+	if (reconstructionActive) fail(503, 'RAW_PREPARING', 'MIME reconstruction is busy; retry this message', true);
+	reconstructionActive = true;
+	try { return await reconstructLegacyBytes(c, email, objectReader); }
+	finally { reconstructionActive = false; }
+}
+async function reconstructLegacyBytes(c, email, objectReader) {
 	const attachments = (await c.env.db.prepare('SELECT * FROM attachments WHERE email_id=? ORDER BY att_id').bind(email.email_id).all()).results;
 	if (attachments.length > 100) fail(422, 'LEGACY_MESSAGE_UNSUPPORTED', 'Historical message has too many MIME parts');
 	let html = email.content || '';
@@ -155,9 +145,9 @@ export async function freezeLegacyEmail(c, emailId, accountId) {
 	if (existing) return existing;
 	const previous = await c.env.db.prepare('SELECT code FROM gateway_raw_failures WHERE email_id=? AND account_id=?').bind(emailId, accountId).first();
 	if (previous?.code === 'RAW_TOO_LARGE') fail(413, 'RAW_TOO_LARGE', 'Historical MIME exceeds the gateway raw limit');
-	// Reconstruction can hold base64 parts in memory. Serialize this exceptional
-	// path across the D1 deployment; ordinary raw downloads are streamed and do
-	// not take this lease. The UID backfill never enters this path.
+	// Serialize initial size/hash registration across the deployment. Every
+	// reconstruction, including subsequent reads, also takes the isolate-local
+	// memory admission guard above. UID backfill never downloads attachments.
 	const token = crypto.randomUUID();
 	const now = Date.now();
 	const lease = await c.env.db.prepare(`INSERT INTO gateway_raw_leases(account_id,email_id,token,expires_at)
@@ -169,8 +159,7 @@ export async function freezeLegacyEmail(c, emailId, accountId) {
 		// Another request may have frozen the same message before we got the lease.
 		const frozen = await c.env.db.prepare('SELECT raw_id FROM gateway_email_raw WHERE email_id=? AND account_id=?').bind(emailId, accountId).first();
 		if (frozen) return frozen;
-		const bytes = await reconstructLegacy(c, email);
-		return await recordRawForEmail(c, { emailId, accountId, bytes, source: 'reconstructed', expectedUserId: email.user_id });
+		return await recordRawForEmail(c, { emailId, accountId });
 	} catch (error) {
 		const code = error?.status === 413 ? 'RAW_TOO_LARGE' : 'RAW_UNAVAILABLE';
 		// A failed message is explicit metadata, not a permanently failing account
@@ -200,19 +189,19 @@ export async function sentFingerprints(bytes, envelope) {
 		contentHash: await sha256(JSON.stringify({ from, to: flatten(parsed.to).sort(), cc: flatten(parsed.cc).sort(), subject: normalized(parsed.subject), text: normalized(parsed.text), html: normalized(parsed.html), files })) };
 }
 export async function recordSentCopy(c, { emailId, accountId, bytes, envelope, submissionId }) {
-	const raw = await recordRawForEmail(c, { emailId, accountId, bytes, source: 'submission' });
 	const fingerprint = await sentFingerprints(bytes, envelope);
 	await c.env.db.prepare(`INSERT OR IGNORE INTO gateway_sent_copies(submission_id,account_id,email_id,payload_hash,content_hash,envelope_hash,created_at)
  VALUES(?,?,?,?,?,?,?)`).bind(submissionId, accountId, emailId, fingerprint.payloadHash, fingerprint.contentHash, fingerprint.envelopeHash, Date.now()).run();
-	return raw;
 }
 
 export async function readPrivateRaw(c, raw) {
-	if (!raw || !raw.object_key.startsWith(PRIVATE_PREFIX)) notFound();
-	const object = await objectStore(c).get(raw.object_key);
-	if (!object) fail(503, 'RAW_UNAVAILABLE', 'Immutable MIME is temporarily unavailable', true);
-	const bytes = await readBounded(object.body, MAX_RAW_MESSAGE_BYTES);
-	if (bytes.byteLength !== raw.size || await sha256(bytes) !== raw.sha256) fail(503, 'RAW_INTEGRITY_FAILURE', 'Immutable MIME failed integrity validation');
+	if (!raw || !/^legacy:[1-9]\d*$/.test(raw.object_key)) fail(503, 'RAW_UNAVAILABLE', 'Message is not backed by existing mail storage', true);
+	const emailId = raw.object_key.slice(7);
+	const email = await c.env.db.prepare(`SELECT e.* FROM email e JOIN account a ON a.account_id=e.account_id AND a.user_id=e.user_id
+ WHERE e.email_id=? AND e.account_id=? AND e.is_del=0 AND e.status NOT IN(6,7,9) AND a.is_del=0`).bind(emailId, raw.account_id).first();
+	if (!email) notFound();
+	const bytes = await reconstructLegacy(c, email);
+	if (bytes.byteLength !== raw.size || await sha256(bytes) !== raw.sha256) fail(409, 'MESSAGE_CHANGED', 'Existing message content changed; relay cannot return different bytes for the same UID');
 	return bytes;
 }
 
@@ -242,26 +231,7 @@ export function rawResponse(c, bytes, raw) {
 	return new Response(bytes.slice(range.start, range.end + 1), { status: 206, headers: { ...headers, 'Content-Length': String(range.length), 'Content-Range': `bytes ${range.start}-${range.end}/${bytes.byteLength}` } });
 }
 
-// R2 validates SHA-256 on put. Its returned checksum/metadata identifies the
-// immutable object, so full and single-range GETs can pass through its stream
-// without making 25 MiB copies in every concurrent Worker request.
+// Reconstruct from existing data on demand; never upload or cache MIME objects.
 export async function rawObjectResponse(c, raw) {
-	if (!raw || !raw.object_key.startsWith(PRIVATE_PREFIX)) notFound();
-	if (raw.size > MAX_RAW_MESSAGE_BYTES) fail(413, 'RAW_TOO_LARGE', 'Immutable MIME exceeds the raw download limit');
-	const headers = rawHeaders(raw);
-	const range = byteRange(c.req.header('Range'), raw.size);
-	if (range === null) return invalidRange(raw, headers);
-	const object = await objectStore(c).get(raw.object_key, range ? { range: { offset: range.offset, length: range.length } } : undefined);
-	if (!object) fail(503, 'RAW_UNAVAILABLE', 'Immutable MIME is temporarily unavailable', true);
-	const checksum = object.checksums?.sha256 ? [...new Uint8Array(object.checksums.sha256)].map(n => n.toString(16).padStart(2, '0')).join('') : object.customMetadata?.sha256;
-	if (object.size !== raw.size || (checksum && checksum !== raw.sha256)) {
-		await object.body.cancel();
-		fail(503, 'RAW_INTEGRITY_FAILURE', 'Immutable MIME failed integrity validation');
-	}
-	if (!checksum) {
-		// Compatibility with pre-checksum objects, never with guessed raw sizes.
-		await object.body.cancel();
-		return rawResponse(c, await readPrivateRaw(c, raw), raw);
-	}
-	return new Response(object.body, { status: range ? 206 : 200, headers: { ...headers, 'Content-Length': String(range ? range.length : raw.size), ...(range ? { 'Content-Range': `bytes ${range.start}-${range.end}/${raw.size}` } : {}) } });
+	return rawResponse(c, await readPrivateRaw(c, raw), raw);
 }
