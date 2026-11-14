@@ -51,7 +51,7 @@
       <div class="title" id="theme-label">{{$t('themeStyle')}}</div>
       <ThemeSelector/>
     </div>
-    <div class="preference-item">
+    <div v-if="settingStore.settings.notice === 0" class="preference-item">
       <div class="title">{{$t('noticeTitle')}}</div>
       <div class="language-row setting-row">
         <div>{{$t('noticeInfo')}}</div>
