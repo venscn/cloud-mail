@@ -27,6 +27,8 @@ import webhookService from './webhook-service';
 import forwardMime from '../utils/forward-mime';
 import verifyUtils from '../utils/verify-utils';
 import smtpSendService from './smtp-send-service';
+import { recordRawForEmail, recordSentCopy } from '../gateway/raw';
+import { SubmissionError, withoutBcc } from '../gateway-submission/validation';
 
 const emailService = {
 
@@ -149,6 +151,7 @@ const emailService = {
 			and(
 				eq(email.userId, userId),
 				eq(email.type, type),
+				ne(email.status, emailConst.status.GATEWAY_PENDING),
 				eq(email.isDel, isDel.NORMAL),
 				allReceive ? undefined : eq(email.accountId, accountId)
 			))
@@ -228,6 +231,7 @@ const emailService = {
 		const conditions = [
 			eq(email.userId, userId),
 			eq(email.type, type),
+			ne(email.status, emailConst.status.GATEWAY_PENDING),
 			eq(email.isDel, isDel.NORMAL),
 			eq(account.isDel, isDel.NORMAL),
 		];
@@ -274,7 +278,7 @@ const emailService = {
 	},
 
 	allEmailListFilters({ emailId, name, subject, accountEmail, userEmail, type, timeSort, withCursor = true, text, searchType, startDate, endDate }) {
-		const conditions = [];
+		const conditions = [ne(email.status, emailConst.status.GATEWAY_PENDING)];
 
 		if (type === 'send') {
 			conditions.push(eq(email.type, emailConst.type.SEND));
@@ -396,7 +400,10 @@ const emailService = {
 	},
 
 	// 发送入口：公共校验、参数准备、渠道选择和结果汇总。
-	async send(c, params, userId) {
+	async send(c, params, userId, execution = null) {
+		// Only the server-side submission service can provide this fourth
+		// argument. No web JSON property enables gateway execution/hooks.
+		const gateway = execution?.kind === 'gateway-submission';
 		let {
 			accountId, //发送账号id
 			name, //发件人名字
@@ -420,7 +427,11 @@ const emailService = {
 
 		const { resendTokens, r2Domain, send, domainList, smtpChannels, sendChain, cfEmailEnabled } = await settingService.query(c);
 
-		let { imageDataList, html } = await attService.toImageUrlHtml(c, content);
+		// MIME CID bytes already came from the bounded parser. Never re-fetch a
+		// caller-supplied image URL or reinterpret an arbitrary storage URL.
+		let { imageDataList, html } = gateway
+			? { imageDataList: execution.imageDataList, html: execution.html }
+			: await attService.toImageUrlHtml(c, content);
 
 		//判断是否关闭发件功能
 		if (send === settingConst.send.CLOSE) {
@@ -503,6 +514,9 @@ const emailService = {
 			throw new BizError(t('noSendProvider'));
 		}
 
+		// Gateway display identity uses the saved Mail account name when set;
+		// preserve its casing. Web composer naming behavior remains unchanged.
+		if (gateway && accountRow.name) name = accountRow.name;
 		//没有发件人名字自动截取
 		if (!name) {
 			name = emailUtils.getName(accountRow.email);
@@ -534,7 +548,8 @@ const emailService = {
 			html,
 			attachments: [...imageDataList, ...attachments],
 			sendType,
-			messageId: emailRow.messageId
+			messageId: emailRow.messageId,
+			...(gateway ? { gateway: { headers: execution.gatewayHeaders, envelopeRecipients: execution.envelope.rcpt_to } } : {})
 		};
 
 		if (imageDataList.length > 10) {
@@ -560,9 +575,12 @@ const emailService = {
 				ccEmail, bccEmail,
 				messageId: emailRow.messageId,
 				sendType, useCloudflareEmail, roleRow, r2Domain,
-				imageDataList, attachments
+				imageDataList, attachments,
+				...(gateway ? { execution } : {})
 			}
 		};
+
+		if (gateway) return this.sendGatewaySubmission(c, context, execution);
 
 		// 全部站内收件人走本地投递；存在站外收件人时按系统设置 sendChain 的
 		// 渠道顺序（默认 SendPulse SMTP -> Resend -> QQ SMTP -> CF 绑定）降级发送
@@ -600,6 +618,57 @@ const emailService = {
 			failedRecipients: sendParams.receiveEmail.filter(address => !sentRecipients.includes(address)),
 			error: sendError
 		};
+	},
+
+	// Gateway shares the complete web preflight and the exact configured channel
+	// order, but persists each irreversible boundary synchronously. No ambiguous
+	// provider error can enter the web composer's quota-message fallback path.
+	async sendGatewaySubmission(c, context, execution) {
+		const { allInternal, sendParams, saveParams } = context;
+		const recipients = execution.envelope.rcpt_to;
+		if (allInternal) {
+			const saved = await this.saveSentEmail(c, { ...saveParams, receiveEmail: sendParams.receiveEmail, gatewayPendingInternal: true });
+			const received = await this.HandleOnSiteEmail(c, recipients, saved, saved.attList, execution);
+			try {
+				await this.forwardOnSiteEmail(c, received, { sendParams });
+			} catch {
+				// Optional notifications/forwarding cannot undo committed local
+				// delivery or turn it into a safely retryable outbound submission.
+				console.error('Gateway internal forwarding unavailable');
+			}
+			return [saved];
+		}
+		const channels = this.buildChannelChain(c, context);
+		for (const channel of channels) {
+			if (channel.limit !== null && await smtpSendService.getQuotaRemaining(c, channel.name, channel.limit) < recipients.length) continue;
+			// worker-mailer has no public CID/raw MIME hook. Refuse before DATA
+			// rather than quietly converting a referenced CID into an attachment.
+			if (execution.imageDataList.length && ['sendpulse', 'qq'].includes(channel.name)) {
+				throw new SubmissionError(422, 'MIME_INLINE_UNSUPPORTED', 'This SMTP channel does not support MIME inline attachments.');
+			}
+			await execution.onAttempt(recipients, channel.name);
+			let result;
+			try {
+				result = await channel.send(sendParams);
+			} catch (error) {
+				if (error.gatewayKnownRejection === true) {
+					await execution.onRejected(recipients, error.gatewayQuota ? 'CHANNEL_QUOTA_REJECTED' : 'CHANNEL_REJECTED', error.gatewayQuota === true);
+					if (error.gatewayQuota && channel.limit !== null) {
+						await smtpSendService.markQuotaExhausted(c, channel.name, channel.limit);
+						continue;
+					}
+				} else {
+					await execution.onUnknown(recipients);
+				}
+				throw error;
+			}
+			await execution.onAccepted(recipients, channel.name);
+			// Post-accept accounting errors must never cause another channel call.
+			if (channel.limit !== null) await smtpSendService.incrQuota(c, channel.name, recipients.length);
+			const saved = await this.saveSentEmail(c, { ...saveParams, receiveEmail: sendParams.receiveEmail, providerId: result?.data?.id ?? null });
+			return [saved];
+		}
+		throw new SubmissionError(429, 'SEND_QUOTA_EXHAUSTED', 'No configured sending channel currently has sufficient quota.', true);
 	},
 
 	// 站内发送：普通发送共用一条发件记录，分开发送则每人一条，再写入站内收件箱。
@@ -644,7 +713,18 @@ const emailService = {
 					const result = await this.sendByResend(resendToken, params);
 					// Resend 用 error 字段返回失败，统一转成异常走配额降级逻辑
 					if (result?.error) {
-						throw new BizError(result.error.message);
+						const error = new BizError(result.error.message);
+						if (params.gateway) {
+							// The SDK also returns error objects for transport failures.
+							// Only a definite HTTP 4xx (not timeout) proves rejection.
+							const status = Number(result.error.statusCode);
+							error.gatewayKnownRejection = status >= 400 && status < 500 && status !== 408;
+							error.gatewayQuota = error.gatewayKnownRejection && (status === 429 || (['daily_quota_exceeded', 'monthly_quota_exceeded'].includes(result.error.name)));
+						}
+						throw error;
+					}
+					if (params.gateway && (typeof result?.data?.id !== 'string' || !result.data.id)) {
+						throw new SubmissionError(502, 'OUTCOME_UNKNOWN', 'Sending channel returned an incomplete response.');
 					}
 					return result;
 				}
@@ -746,17 +826,22 @@ const emailService = {
 			providerId, messageId, sendType, useCloudflareEmail,
 			roleRow, r2Domain, attachments
 		} = params;
-		const imageDataList = params.imageDataList.map(item => ({
-			...item, contentId: `<${item.contentId.replace(/^<|>$/g, '')}>`
-		}));
+		const execution = params.execution;
+		const imageDataList = params.imageDataList.map(item => execution ? {
+			filename: item.filename, mimeType: item.mimeType, key: item.key,
+			size: item.size, buff: item.buff,
+			contentId: `<${item.contentId.replace(/^<|>$/g, '')}>`
+		} : { ...item, contentId: `<${item.contentId.replace(/^<|>$/g, '')}>` });
+		const finalStatus = useCloudflareEmail ? emailConst.status.DELIVERED : emailConst.status.SENT;
 		const emailData = {
 			sendEmail, name, subject, text, accountId, userId,
+			...(execution ? { messageId: execution.messageId } : {}),
 			content: this.imgReplace(html, imageDataList, r2Domain),
-			status: useCloudflareEmail ? emailConst.status.DELIVERED : emailConst.status.SENT,
+			status: execution ? emailConst.status.GATEWAY_PENDING : finalStatus,
 			type: emailConst.type.SEND,
 			resendEmailId: providerId,
-			recipient: JSON.stringify(receiveEmail.map(address => ({ address, name: '' }))),
-			cc: JSON.stringify(ccEmail.map(address => ({ address, name: '' }))),
+			recipient: JSON.stringify((execution?.visibleTo ?? receiveEmail).map(address => ({ address, name: '' }))),
+			cc: JSON.stringify((execution?.visibleCc ?? ccEmail).map(address => ({ address, name: '' }))),
 			bcc: JSON.stringify(bccEmail.map(address => ({ address, name: '' })))
 		};
 		if (sendType === 'reply') {
@@ -792,6 +877,15 @@ const emailService = {
 			await c.env.kv.put(kvConst.SEND_DAY_COUNT + dateStr, JSON.stringify(daySendTotal), { expirationTtl: 60 * 60 * 24 });
 		}
 
+		if (execution) {
+			await recordSentCopy(c, { emailId: emailResult.emailId, accountId, bytes: execution.rawBytes,
+				envelope: execution.envelope, submissionId: execution.id });
+			await execution.onSentSaved(emailResult.emailId);
+			if (!params.gatewayPendingInternal) {
+				await execution.commitEmailStatus(emailResult.emailId, accountId, finalStatus);
+				emailResult.status = finalStatus;
+			}
+		}
 		return emailResult;
 	},
 
@@ -825,7 +919,12 @@ const emailService = {
 			sendForm.attachments = attachments;
 		}
 
-		if (params.sendType === 'reply' && params.messageId) {
+		if (params.gateway) {
+			// Recipient fields are the SMTP envelope projection. Header overrides
+			// preserve visible To/Cc without adding a delivery target or any Bcc.
+			sendForm.headers = { ...params.gateway.headers };
+			if (params.gateway.headers['Reply-To']) sendForm.replyTo = params.gateway.headers['Reply-To'];
+		} else if (params.sendType === 'reply' && params.messageId) {
 			sendForm.headers = {
 				'in-reply-to': params.messageId,
 				'references': params.messageId
@@ -833,6 +932,9 @@ const emailService = {
 		}
 
 		const result = await c.env.email.send(sendForm);
+		if (params.gateway && (typeof result?.messageId !== 'string' || !result.messageId.trim())) {
+			throw new SubmissionError(502, 'OUTCOME_UNKNOWN', 'The sending channel did not confirm acceptance.');
+		}
 
 		return {
 			data: {
@@ -845,8 +947,8 @@ const emailService = {
 		const resend = new Resend(resendToken);
 
 		const sendForm = {
-			from: `${params.name} <${params.accountEmail}>`,
-			reply_to: params.accountEmail,
+			from: params.gateway ? `"${String(params.name || '').replace(/[\r\n]/g, ' ').replace(/["\\]/g, '\\$&')}" <${params.accountEmail}>` : `${params.name} <${params.accountEmail}>`,
+			replyTo: params.accountEmail,
 			to: [...params.receiveEmail],
 			subject: params.subject,
 			text: params.text,
@@ -863,7 +965,10 @@ const emailService = {
 			sendForm.bcc = [...params.bccEmail];
 		}
 
-		if (params.sendType === 'reply') {
+		if (params.gateway) {
+			sendForm.headers = { ...params.gateway.headers };
+			if (params.gateway.headers['Reply-To']) sendForm.replyTo = params.gateway.headers['Reply-To'];
+		} else if (params.sendType === 'reply') {
 			sendForm.headers = {
 				'in-reply-to': params.messageId,
 				'references': params.messageId
@@ -981,7 +1086,7 @@ const emailService = {
 	},
 
 	//处理站内邮件发送
-	async HandleOnSiteEmail(c, receiveEmail, sendEmailData, attList) {
+	async HandleOnSiteEmail(c, receiveEmail, sendEmailData, attList, execution = null) {
 
 		const { noRecipient  } = await settingService.query(c);
 
@@ -1086,11 +1191,18 @@ const emailService = {
 		//保存邮件
 		const receiveEmailList = emailDataList.filter(emailRow => emailRow.status === emailConst.status.RECEIVE || emailRow.status === emailConst.status.NOONE);
 		const emailRowList = [];
+		const recipientRaw = execution ? withoutBcc(execution.rawBytes) : null;
+		if (execution) {
+			for (const rejected of emailDataList.filter(row => row.status === emailConst.status.BOUNCED)) {
+				await execution.onRejected([rejected.toEmail], 'INTERNAL_REJECTED');
+			}
+		}
 
 		for (const emailData of receiveEmailList) {
-
-			const emailRow = await orm(c).insert(email).values(emailData).returning().get();
-			emailRowList.push(emailRow);
+			const finalStatus = emailData.status;
+			if (execution) await execution.onAttempt([emailData.toEmail], 'internal');
+			const emailRow = await orm(c).insert(email).values(execution ? { ...emailData, status: emailConst.status.GATEWAY_PENDING } : emailData).returning().get();
+			if (execution) await recordRawForEmail(c, { emailId: emailRow.emailId, accountId: emailRow.accountId, bytes: recipientRaw, source: 'submission' });
 
 			//设置附件保存
 			for (const attRow of attList) {
@@ -1101,7 +1213,12 @@ const emailService = {
 				attValues.attId = null;
 				await orm(c).insert(att).values(attValues).run();
 			}
-
+			if (execution) {
+				await execution.commitEmailStatus(emailRow.emailId, emailRow.accountId, finalStatus);
+				emailRow.status = finalStatus;
+				await execution.onAccepted([emailData.toEmail], 'internal');
+			}
+			emailRowList.push(emailRow);
 		}
 
 		const bouncedEmail = emailDataList.find(emailRow => emailRow.status === emailConst.status.BOUNCED);
@@ -1116,7 +1233,14 @@ const emailService = {
 			status = emailConst.status.BOUNCED;
 		}
 
-		await orm(c).update(email).set({ status, message: message }).where(eq(email.emailId, sendEmailData.emailId)).run();
+		if (execution) {
+			await orm(c).update(email).set({ message }).where(and(eq(email.emailId, sendEmailData.emailId), eq(email.status, emailConst.status.GATEWAY_PENDING))).run();
+			await execution.commitEmailStatus(sendEmailData.emailId, sendEmailData.accountId, status);
+			sendEmailData.status = status;
+			sendEmailData.message = message;
+		} else {
+			await orm(c).update(email).set({ status, message }).where(eq(email.emailId, sendEmailData.emailId)).run();
+		}
 
 		return emailRowList;
 	},
@@ -1218,6 +1342,7 @@ const emailService = {
 	selectById(c, emailId) {
 		return orm(c).select().from(email).where(
 			and(eq(email.emailId, emailId),
+				ne(email.status, emailConst.status.GATEWAY_PENDING),
 				eq(email.isDel, isDel.NORMAL)))
 			.get();
 	},
@@ -1240,6 +1365,7 @@ const emailService = {
 				and(
 					gt(email.emailId, emailId),
 					eq(email.userId, userId),
+					ne(email.status, emailConst.status.GATEWAY_PENDING),
 					eq(email.isDel, isDel.NORMAL),
 					eq(account.isDel, isDel.NORMAL),
 					allReceive ? undefined : eq(email.accountId, accountId),
@@ -1273,7 +1399,7 @@ const emailService = {
 		return orm(c).update(email).set({
 			status: status,
 			message: message
-		}).where(eq(email.resendEmailId, resendEmailId)).returning().get();
+		}).where(and(eq(email.resendEmailId, resendEmailId), ne(email.status, emailConst.status.GATEWAY_PENDING))).returning().get();
 	},
 
 	async selectUserEmailCountList(c, userIds, type, del = isDel.NORMAL) {
@@ -1288,6 +1414,7 @@ const emailService = {
 				eq(email.type, type),
 				eq(email.isDel, del),
 				ne(email.status, emailConst.status.SAVING),
+				ne(email.status, emailConst.status.GATEWAY_PENDING),
 			))
 			.groupBy(email.userId);
 		return result;
@@ -1354,7 +1481,7 @@ const emailService = {
 			accountId: email.accountId,
 			userId: email.userId,
 		}).from(email)
-			.where(eq(email.type, emailConst.type.RECEIVE))
+			.where(and(eq(email.type, emailConst.type.RECEIVE), ne(email.status, emailConst.status.GATEWAY_PENDING)))
 			.orderBy(desc(email.emailId)).limit(1).get();
 
 		let [list, totalRow, latestEmail] = await Promise.all([listQuery, totalQuery, latestEmailQuery]);
@@ -1385,6 +1512,7 @@ const emailService = {
 			.where(
 				and(
 					gt(email.emailId, emailId),
+					ne(email.status, emailConst.status.GATEWAY_PENDING),
 					eq(email.type, emailConst.type.RECEIVE)
 				))
 			.orderBy(desc(email.emailId))
@@ -1424,6 +1552,8 @@ const emailService = {
 	},
 
 	async completeReceiveAll(c) {
+		// Gateway SMTP uses GATEWAY_PENDING, never SAVING: only its guarded final
+		// commit may publish it. This legacy recovery must not adopt those rows.
 		// 用 EXISTS 走 status=6 部分索引 + account 主键；避免 IN (SELECT account_id FROM account) 触发全盘扫描
 		await c.env.db.prepare(
 			`UPDATE email

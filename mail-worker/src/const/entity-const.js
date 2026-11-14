@@ -49,7 +49,9 @@ export const emailConst = {
 		DELAYED: 5,
 		SAVING: 6,
 		NOONE: 7,
-		FAILED: 8
+		FAILED: 8,
+		// Private gateway staging. Legacy receive-recovery cron must never publish it.
+		GATEWAY_PENDING: 9
 	},
 	unread: {
 		UNREAD: 0,
