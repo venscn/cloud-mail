@@ -5,13 +5,15 @@ const STALE_SENDING_MS = 10 * 60 * 1000;
 export class SubmissionRepository {
 	constructor(c) { this.db = c.env.db; }
 
-	async reserve({ id, principal, key, prepared, envelope, rawKey, result }) {
+	async reserve({ id, principal, key, prepared, envelope, result }) {
 		const now = new Date().toISOString();
+		// Keep the legacy NOT NULL column empty: relay submissions never store
+		// original MIME or allocate a raw-object locator.
 		const inserted = await this.db.prepare(`INSERT INTO gateway_submissions
 			(id, account_id, user_id, idempotency_key, request_hash, payload_hash, envelope_json, raw_key, message_id, state, phase, result_json, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sending', 'preparing', ?, ?, ?)
 			ON CONFLICT(account_id, idempotency_key) DO NOTHING`)
-			.bind(id, principal.accountId, principal.userId, key, prepared.requestHash, prepared.payloadHash, JSON.stringify(envelope), rawKey, prepared.messageId, JSON.stringify(result), now, now).run();
+			.bind(id, principal.accountId, principal.userId, key, prepared.requestHash, prepared.payloadHash, JSON.stringify(envelope), '', prepared.messageId, JSON.stringify(result), now, now).run();
 		const row = await this.byKey(principal, key);
 		if (!row) throw new SubmissionError(503, 'SUBMISSION_STORAGE_UNAVAILABLE', 'Submission persistence is unavailable.', true);
 		if (row.request_hash !== prepared.requestHash) throw new SubmissionError(409, 'IDEMPOTENCY_CONFLICT', 'This idempotency key was already used for another request.');

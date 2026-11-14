@@ -27,8 +27,8 @@ import webhookService from './webhook-service';
 import forwardMime from '../utils/forward-mime';
 import verifyUtils from '../utils/verify-utils';
 import smtpSendService from './smtp-send-service';
-import { recordRawForEmail, recordSentCopy } from '../gateway/raw';
-import { SubmissionError, withoutBcc } from '../gateway-submission/validation';
+import { recordSentCopy } from '../gateway/raw';
+import { SubmissionError } from '../gateway-submission/validation';
 
 const emailService = {
 
@@ -1191,7 +1191,6 @@ const emailService = {
 		//保存邮件
 		const receiveEmailList = emailDataList.filter(emailRow => emailRow.status === emailConst.status.RECEIVE || emailRow.status === emailConst.status.NOONE);
 		const emailRowList = [];
-		const recipientRaw = execution ? withoutBcc(execution.rawBytes) : null;
 		if (execution) {
 			for (const rejected of emailDataList.filter(row => row.status === emailConst.status.BOUNCED)) {
 				await execution.onRejected([rejected.toEmail], 'INTERNAL_REJECTED');
@@ -1202,7 +1201,6 @@ const emailService = {
 			const finalStatus = emailData.status;
 			if (execution) await execution.onAttempt([emailData.toEmail], 'internal');
 			const emailRow = await orm(c).insert(email).values(execution ? { ...emailData, status: emailConst.status.GATEWAY_PENDING } : emailData).returning().get();
-			if (execution) await recordRawForEmail(c, { emailId: emailRow.emailId, accountId: emailRow.accountId, bytes: recipientRaw, source: 'submission' });
 
 			//设置附件保存
 			for (const attRow of attList) {

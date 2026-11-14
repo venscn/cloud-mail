@@ -15,12 +15,6 @@ function safeFailure(error, attempted) {
 // never spread into the execution hooks or trusted gateway-only send options.
 export function createSubmissionService({
 	send = (c, params, userId, execution) => emailService.send(c, params, userId, execution),
-	storage = {
-		async putObj(c, key, bytes, metadata) {
-			if (!c.env.r2) throw new SubmissionError(503, 'RAW_STORAGE_UNAVAILABLE', 'Private MIME storage is unavailable.', true);
-			return c.env.r2.put(key, bytes, { httpMetadata: { ...metadata, cacheControl: 'private, no-store' } });
-		}
-	},
 	repository = c => new SubmissionRepository(c),
 	authorize = c => requireGatewayAuth(c, 'mail.send')
 } = {}) {
@@ -33,12 +27,11 @@ export function createSubmissionService({
 			const prepared = await prepareMime(bytes, envelope, principal);
 			const repo = repository(c);
 			const id = crypto.randomUUID();
-			const rawKey = `private-gateway/submissions/${principal.accountId}/${id}.eml`;
 			const result = {
 				recipients: envelope.rcpt_to.map(address => ({ address, state: 'pending', code: 'NOT_ATTEMPTED' })),
 				attempts: [], email_ids: [], retryable: false, code: null
 			};
-			const reserved = await repo.reserve({ id, principal, key, prepared, envelope, rawKey, result });
+			const reserved = await repo.reserve({ id, principal, key, prepared, envelope, result });
 			if (!reserved.created) {
 				// Never call the business send path on duplicate POST, including a
 				// stale/crashed/unknown record. A status lookup is the only recovery.
@@ -108,7 +101,7 @@ export function createSubmissionService({
 				},
 				async commitEmailStatus(emailId, accountId, status) {
 					// Authorization and the visibility transition share one D1
-					// transaction. Revocation during R2 I/O cannot expose a delivery.
+					// transaction. Revocation during attachment I/O cannot expose a delivery.
 					const guard = mutationGuard(c, principal, { operation: 'mail.send' });
 					const results = await c.env.db.batch([guard.start,
 						c.env.db.prepare('UPDATE email SET status=? WHERE email_id=? AND account_id=? AND status=? RETURNING email_id').bind(status, emailId, accountId, emailConst.status.GATEWAY_PENDING), guard.end]);
@@ -119,9 +112,8 @@ export function createSubmissionService({
 				}
 			};
 			try {
-				// Private immutable original and its digest are persisted before any
-				// outbound effects. No waitUntil/goroutine masquerades as a queue.
-				await storage.putObj(c, rawKey, bytes, { contentType: 'message/rfc822' });
+				// Original MIME exists only in this request. D1 keeps idempotency and
+				// recipient evidence; attachment storage uses the existing send pipeline.
 				await checkAuthority();
 				await send(c, prepared.params, Number(principal.userId), execution);
 				if (!result.recipients.every(item => item.state === 'accepted') || !result.email_ids.length) {
