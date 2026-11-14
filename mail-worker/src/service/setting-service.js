@@ -11,6 +11,7 @@ import verifyRecordService from './verify-record-service';
 import userContext from '../security/user-context';
 import domainUtils from '../utils/domain-uitls';
 import smtpSendService from './smtp-send-service';
+import { gatewayDisplayConfig, gatewaySettingsPatch } from '../utils/gateway-settings';
 
 const settingService = {
 
@@ -19,6 +20,7 @@ const settingService = {
 		settingRow.resendTokens = JSON.parse(settingRow.resendTokens);
 		settingRow.smtpChannels = JSON.parse(settingRow.smtpChannels || '{}');
 		settingRow.sendChain = JSON.parse(settingRow.sendChain || '["resend","sendpulse","qq","cf"]');
+		Object.assign(settingRow, gatewayDisplayConfig(settingRow));
 		settingRow.r2Domain = '';
 		c.set('setting', settingRow);
 		await c.env.kv.put(KvConst.SETTING, JSON.stringify(settingRow));
@@ -27,7 +29,9 @@ const settingService = {
 	async query(c) {
 
 		if (c.get?.('setting')) {
-			return c.get('setting')
+			const cached = c.get('setting');
+			Object.assign(cached, gatewayDisplayConfig(cached));
+			return cached;
 		}
 
 		const setting = await c.env.kv.get(KvConst.SETTING, { type: 'json' });
@@ -63,6 +67,7 @@ const settingService = {
 		}
 
 		setting.projectLink = projectLink;
+		Object.assign(setting, gatewayDisplayConfig(setting));
 
 		setting.emailPrefixFilter = setting.emailPrefixFilter.split(",").filter(Boolean);
 
@@ -124,6 +129,8 @@ const settingService = {
 
 	async set(c, params) {
 		const settingData = await this.query(c);
+		// Validate before any write or mutation of unrelated setting fields.
+		params = { ...params, ...gatewaySettingsPatch(settingData, params) };
 		let resendTokens = { ...settingData.resendTokens, ...params.resendTokens };
 		Object.keys(resendTokens).forEach(domain => {
 			if (!resendTokens[domain]) delete resendTokens[domain];
@@ -287,7 +294,9 @@ const settingService = {
 			googleClientId: settingRow.googleClientId,
 			googleSwitch: settingRow.googleSwitch,
 			minEmailPrefix: settingRow.minEmailPrefix,
-			projectLink: settingRow.projectLink
+			projectLink: settingRow.projectLink,
+			gatewayEnabled: settingRow.gatewayEnabled,
+			gatewayHostname: settingRow.gatewayHostname
 		};
 	},
 

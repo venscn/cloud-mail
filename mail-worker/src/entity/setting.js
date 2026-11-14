@@ -70,6 +70,8 @@ export const setting = sqliteTable('setting', {
 	webhookSecret: text('webhook_secret').default('').notNull(),
 	smtpChannels: text('smtp_channels').default("{}").notNull(),
 	sendChain: text('send_chain').default('["resend","sendpulse","qq","cf"]').notNull(),
-	cfEmailEnabled: integer('cf_email_enabled').default(1).notNull()
+	cfEmailEnabled: integer('cf_email_enabled').default(1).notNull(),
+	gatewayEnabled: integer('gateway_enabled').default(0).notNull(),
+	gatewayHostname: text('gateway_hostname').default('').notNull()
 });
 export default setting
