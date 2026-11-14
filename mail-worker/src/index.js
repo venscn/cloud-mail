@@ -1,4 +1,5 @@
 import app from './hono/webs';
+import gateway from './api/gateway-api.js';
 import { email } from './email/email';
 import userService from './service/user-service';
 import verifyRecordService from './service/verify-record-service';
@@ -10,6 +11,12 @@ export default {
 	 async fetch(req, env, ctx) {
 
 		const url = new URL(req.url)
+
+		// Exact namespace boundary, before legacy /api rewriting and JWT middleware.
+		// Gateway bearer sessions never authorize web routes (or vice versa).
+		if (url.pathname === '/api/gateway/v1' || url.pathname.startsWith('/api/gateway/v1/')) {
+			return gateway.fetch(req, env, ctx);
+		}
 
 		if (url.pathname.startsWith('/api/')) {
 			url.pathname = url.pathname.replace('/api', '')
