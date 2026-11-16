@@ -1,3 +1,5 @@
+> **上流版の紹介です。** 以下は [maillab/cloud-mail](https://github.com/maillab/cloud-mail) の説明を保持しています。このリポジトリは venscn による派生・拡張版です。追加機能、任意の [Gateway](https://github.com/venscn/cloud-mail-gateway)、現在の導入上の注意点は [メイン README](./README.md) を参照してください。以下のデモ、画像、リリース・受賞バッジは上流版のもので、この派生版への評価ではありません。上流の導入ガイドは派生版の追加機能を網羅していません。
+
 <p align="center">
     <img src="doc/demo/logo.png" width="80px" />
     <h1 align="center">Cloud Mail</h1>

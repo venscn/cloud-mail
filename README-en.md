@@ -1,3 +1,5 @@
+> **Upstream introduction.** The content below is retained from [maillab/cloud-mail](https://github.com/maillab/cloud-mail). This repository is the venscn-maintained derivative; see the [main README](./README.md) for its additions, optional [Gateway](https://github.com/venscn/cloud-mail-gateway), and current setup boundaries. Demos, screenshots, release badges and awards below refer to upstream, not this fork. The upstream deployment guide does not cover this fork's additions.
+
 <p align="center">
     <img src="doc/demo/logo.png" width="80px" />
     <h1 align="center">Cloud Mail</h1>

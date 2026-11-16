@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="552" viewBox="0 0 1200 552" role="img" aria-labelledby="title desc">
+  <title id="title">Cloud Mail — 网页直达，可选客户端</title>
+  <desc id="desc">架构概念图，不是产品截图。浏览器通过 HTTPS 直接访问 Cloud Mail。邮件客户端经 TLS 连接可选 Gateway，再经 HTTPS 访问同一个 Cloud Mail 邮箱；Cloud Mail 保持数据与权限权威。</desc>
+  <rect width="1200" height="552" rx="16" fill="#0b1220"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" fill="#f8fafc">
+    <g id="project-title">
+      <text x="64" y="112" font-size="80" font-weight="700" letter-spacing="-2">Cloud Mail</text>
+      <text x="64" y="168" font-size="32">网页直接用，客户端按需连接。</text>
+      <text x="1136" y="88" text-anchor="end" font-size="20" fill="#94a3b8">架构概念 · 非产品截图</text>
+    </g>
+    <g id="connections" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M384 272 H744" stroke="#38bdf8"/>
+      <path d="M320 432 H424" stroke="#34d399"/>
+      <path d="M672 432 H712 V344 H744" stroke="#34d399"/>
+      <path d="m734 262 10 10-10 10" stroke="#38bdf8"/>
+      <path d="m414 422 10 10-10 10 M734 334l10 10-10 10" stroke="#34d399"/>
+    </g>
+    <text x="552" y="256" text-anchor="middle" font-size="24" fill="#38bdf8">HTTPS</text>
+    <text x="372" y="408" text-anchor="middle" font-size="22" fill="#34d399">TLS</text>
+    <text x="692" y="490" text-anchor="middle" font-size="22" fill="#34d399">HTTPS</text>
+    <g id="web-client">
+      <rect x="64" y="224" width="320" height="96" rx="16" fill="#0b1220" stroke="#38bdf8" stroke-width="2"/>
+      <text x="224" y="287" text-anchor="middle" font-size="40" font-weight="600">浏览器</text>
+    </g>
+    <g id="optional-client">
+      <rect x="64" y="384" width="256" height="96" rx="16" fill="#0b1220" stroke="#94a3b8" stroke-width="2"/>
+      <text x="192" y="444" text-anchor="middle" font-size="32">邮件客户端</text>
+    </g>
+    <g id="optional-gateway">
+      <rect x="424" y="384" width="248" height="96" rx="16" fill="#0b1220" stroke="#34d399" stroke-width="2"/>
+      <text x="548" y="422" text-anchor="middle" font-size="20" fill="#34d399">可选 · 协议桥接</text>
+      <text x="548" y="461" text-anchor="middle" font-size="34" font-weight="600">Gateway</text>
+    </g>
+    <g id="mail-authority">
+      <rect x="744" y="224" width="392" height="256" rx="16" fill="#0b1220" stroke="#38bdf8" stroke-width="2"/>
+      <g fill="none" stroke="#38bdf8" stroke-width="2" stroke-linejoin="round">
+        <rect x="904" y="256" width="72" height="48" rx="8"/>
+        <path d="m906 260 34 25 34-25"/>
+      </g>
+      <text x="940" y="360" text-anchor="middle" font-size="40" font-weight="700">同一个邮箱</text>
+      <text x="940" y="402" text-anchor="middle" font-size="26" fill="#38bdf8">Cloud Mail</text>
+      <text x="940" y="446" text-anchor="middle" font-size="22" fill="#94a3b8">账户 · 邮件 · 权限 · 同步状态</text>
+    </g>
+    <text x="64" y="520" font-family="ui-monospace, 'Cascadia Mono', Consolas, monospace" font-size="18" fill="#94a3b8">venscn / cloud-mail · based on maillab / cloud-mail</text>
+  </g>
+</svg>
